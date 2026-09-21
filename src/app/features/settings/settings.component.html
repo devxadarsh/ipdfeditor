@@ -1,64 +1,519 @@
-<section class="settings-page">
+<section class="tool-page tool-page--settings">
   <div class="pf-container">
-    <header class="settings-page__header">
-      <h1>Settings</h1>
-      <p class="pf-text-muted">
-        Preferences are stored locally in this browser only.
+    <!-- Symmetric Tool Header -->
+    <header class="tool-header">
+      <div class="tool-header__title-row">
+        <h1 class="tool-header__title">Application Settings</h1>
+        <span class="tool-cat-pill tool-cat-pill--edit">
+          <i class="fa-solid fa-sliders"></i>
+          <span>Preferences &amp; System</span>
+        </span>
+      </div>
+      <p class="tool-header__subtitle">
+        Customize appearance, editor defaults, accessibility, and manage local browser storage. All data stays strictly on your device.
       </p>
     </header>
 
-    <div class="settings-card pf-card">
-      <h2 class="settings-card__title">Appearance</h2>
-      <div class="settings-row">
-        <div>
-          <h3>Theme</h3>
-          <p class="pf-text-muted">Choose how PDFForge looks.</p>
+    <div class="settings-layout">
+      <!-- Section 1: Appearance & Theme -->
+      <div class="settings-section pf-card">
+        <div class="settings-section__header">
+          <div class="settings-section__icon-badge">
+            <i class="fa-solid fa-palette"></i>
+          </div>
+          <div>
+            <h2 class="settings-section__title">Appearance &amp; Theme</h2>
+            <p class="settings-section__subtitle pf-text-muted">
+              Select your preferred visual style and motion comfort.
+            </p>
+          </div>
         </div>
-        <div class="segmented" role="radiogroup" aria-label="Theme">
+
+        <!-- Theme Selection Cards Grid -->
+        <div class="theme-grid">
           @for (opt of themeOptions; track opt.value) {
             <button
               type="button"
-              class="segmented__btn"
-              role="radio"
-              [class.segmented__btn--active]="theme() === opt.value"
+              class="theme-card"
+              [class.theme-card--active]="theme() === opt.value"
               [attr.aria-checked]="theme() === opt.value"
+              role="radio"
               (click)="setTheme(opt.value)"
             >
-              {{ opt.label }}
+              <div class="theme-card__preview theme-card__preview--{{ opt.value }}">
+                <div class="theme-card__mock-header"></div>
+                <div class="theme-card__mock-canvas">
+                  <div class="theme-card__mock-doc"></div>
+                </div>
+              </div>
+
+              <div class="theme-card__info">
+                <div class="theme-card__title-row">
+                  <i [ngClass]="opt.icon"></i>
+                  <strong>{{ opt.label }}</strong>
+                  <div class="theme-card__check">
+                    <i class="fa-solid fa-circle-check"></i>
+                  </div>
+                </div>
+                <p class="theme-card__desc">{{ opt.description }}</p>
+              </div>
             </button>
+          }
+        </div>
+
+        <!-- Motion Sub-row -->
+        <div class="settings-row">
+          <div class="settings-row__left">
+            <h3 class="settings-row__title">Reduce Motion</h3>
+            <p class="settings-row__desc pf-text-muted">
+              Minimize animations and visual transitions for a calmer experience.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="pf-switch"
+            role="switch"
+            [attr.aria-checked]="reduceMotion()"
+            [class.pf-switch--on]="reduceMotion()"
+            (click)="toggleMotion()"
+            title="Toggle reduced motion"
+          >
+            <span class="pf-switch__thumb"></span>
+          </button>
+        </div>
+
+        <!-- High Contrast Accessibility Sub-row -->
+        <div class="settings-row">
+          <div class="settings-row__left">
+            <h3 class="settings-row__title">High Contrast Mode</h3>
+            <p class="settings-row__desc pf-text-muted">
+              Enforce bold borders, deep text contrast, and prominent focus indicators for improved accessibility.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="pf-switch"
+            role="switch"
+            [attr.aria-checked]="highContrast()"
+            [class.pf-switch--on]="highContrast()"
+            (click)="toggleHighContrast()"
+            title="Toggle high contrast mode"
+          >
+            <span class="pf-switch__thumb"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Section 2: Annotation & Export Defaults -->
+      <div class="settings-section pf-card">
+        <div class="settings-section__header">
+          <div class="settings-section__icon-badge">
+            <i class="fa-solid fa-paintbrush"></i>
+          </div>
+          <div>
+            <h2 class="settings-section__title">Annotation &amp; Export Defaults</h2>
+            <p class="settings-section__subtitle pf-text-muted">
+              Configure preselected colors, typography scale, and naming conventions for your editor workflow.
+            </p>
+          </div>
+        </div>
+
+        <!-- Default Color Swatches -->
+        <div class="settings-row">
+          <div class="settings-row__left">
+            <h3 class="settings-row__title">Default Annotation Color</h3>
+            <p class="settings-row__desc pf-text-muted">
+              Preselected stroke and highlight color when opening drawing or text tools.
+            </p>
+          </div>
+          <div class="color-swatches" role="radiogroup" aria-label="Default annotation color">
+            @for (c of colorOptions; track c.value) {
+              <button
+                type="button"
+                class="swatch-btn"
+                [class.swatch-btn--active]="defaultColor() === c.value"
+                [style.background-color]="c.value"
+                [attr.aria-label]="c.label"
+                [title]="c.label"
+                (click)="setDefaultColor(c.value)"
+              >
+                @if (defaultColor() === c.value) {
+                  <i class="fa-solid fa-check"></i>
+                }
+              </button>
+            }
+          </div>
+        </div>
+
+        <!-- Default Font Size -->
+        <div class="settings-row">
+          <div class="settings-row__left">
+            <h3 class="settings-row__title">Default Font Size</h3>
+            <p class="settings-row__desc pf-text-muted">
+              Initial typography size applied to newly created text overlay boxes.
+            </p>
+          </div>
+          <div class="zoom-selector" role="radiogroup" aria-label="Default font size">
+            @for (fs of fontSizeOptions; track fs.value) {
+              <button
+                type="button"
+                class="zoom-btn"
+                [class.zoom-btn--active]="defaultFontSize() === fs.value"
+                (click)="setDefaultFontSize(fs.value)"
+              >
+                {{ fs.label }}
+              </button>
+            }
+          </div>
+        </div>
+
+        <!-- Default Export Filename Suffix -->
+        <div class="settings-row">
+          <div class="settings-row__left">
+            <h3 class="settings-row__title">Default Export Filename Suffix</h3>
+            <p class="settings-row__desc pf-text-muted">
+              Appended to original file names when downloading modified PDFs from the editor.
+            </p>
+          </div>
+          <div class="zoom-selector" role="radiogroup" aria-label="Default export suffix">
+            @for (suf of suffixOptions; track suf.value) {
+              <button
+                type="button"
+                class="zoom-btn"
+                [class.zoom-btn--active]="defaultExportSuffix() === suf.value"
+                (click)="setDefaultExportSuffix(suf.value)"
+              >
+                <code>{{ suf.label }}</code>
+              </button>
+            }
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 3: Editor Workspace Defaults -->
+      <div class="settings-section pf-card">
+        <div class="settings-section__header">
+          <div class="settings-section__icon-badge">
+            <i class="fa-solid fa-pen-ruler"></i>
+          </div>
+          <div>
+            <h2 class="settings-section__title">Editor Workspace Preferences</h2>
+            <p class="settings-section__subtitle pf-text-muted">
+              Configure how the PDF editing studio behaves when opening documents.
+            </p>
+          </div>
+        </div>
+
+        <!-- Default Zoom Level -->
+        <div class="settings-row">
+          <div class="settings-row__left">
+            <h3 class="settings-row__title">Default Zoom Level</h3>
+            <p class="settings-row__desc pf-text-muted">
+              Initial magnification when a PDF document is first loaded.
+            </p>
+          </div>
+          <div class="zoom-selector">
+            @for (z of zoomOptions; track z.value) {
+              <button
+                type="button"
+                class="zoom-btn"
+                [class.zoom-btn--active]="defaultZoom() === z.value"
+                (click)="setDefaultZoom(z.value)"
+              >
+                {{ z.label }}
+              </button>
+            }
+          </div>
+        </div>
+
+        <!-- Auto-save Edits -->
+        <div class="settings-row">
+          <div class="settings-row__left">
+            <h3 class="settings-row__title">Auto-Save Working Session</h3>
+            <p class="settings-row__desc pf-text-muted">
+              Automatically persist annotations and document states locally in IndexedDB to prevent accidental data loss.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="pf-switch"
+            role="switch"
+            [attr.aria-checked]="autoSave()"
+            [class.pf-switch--on]="autoSave()"
+            (click)="toggleAutoSave()"
+            title="Toggle auto-save"
+          >
+            <span class="pf-switch__thumb"></span>
+          </button>
+        </div>
+
+        <!-- Default Thumbnails Sidebar -->
+        <div class="settings-row">
+          <div class="settings-row__left">
+            <h3 class="settings-row__title">Show Page Thumbnails Automatically</h3>
+            <p class="settings-row__desc pf-text-muted">
+              Expand the page navigation sidebar immediately upon opening a document.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="pf-switch"
+            role="switch"
+            [attr.aria-checked]="showThumbnails()"
+            [class.pf-switch--on]="showThumbnails()"
+            (click)="toggleThumbnails()"
+            title="Toggle thumbnail sidebar"
+          >
+            <span class="pf-switch__thumb"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Section 4: Storage & Local Document Management -->
+      <div class="settings-section pf-card">
+        <div class="settings-section__header">
+          <div class="settings-section__icon-badge">
+            <i class="fa-solid fa-hard-drive"></i>
+          </div>
+          <div>
+            <h2 class="settings-section__title">Browser Storage &amp; Cache</h2>
+            <p class="settings-section__subtitle pf-text-muted">
+              Manage locally stored documents, diagnostic capacity, and portable configuration backups.
+            </p>
+          </div>
+        </div>
+
+        <!-- Storage Status Banner with Visual Meter -->
+        <div class="storage-card">
+          <div class="storage-card__header">
+            <div class="storage-card__info">
+              <i class="fa-solid fa-database text-primary"></i>
+              <div>
+                <span class="storage-card__label">Estimated Browser Storage Used:</span>
+                <strong class="storage-card__val">{{ storageUsage().used }}</strong>
+                <span class="storage-card__quota pf-text-muted"> (of {{ storageUsage().quota }})</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="pf-btn pf-btn--ghost pf-btn--sm"
+              (click)="calculateStorage()"
+              title="Recalculate storage usage"
+            >
+              <i class="fa-solid fa-rotate-right"></i>
+              <span>Refresh</span>
+            </button>
+          </div>
+
+          <div class="storage-progress" role="progressbar" [attr.aria-valuenow]="storagePercent()" aria-valuemin="0" aria-valuemax="100" [title]="storagePercent() + '% used'">
+            <div
+              class="storage-progress__bar"
+              [style.width.%]="storagePercent() > 0 ? storagePercent() : 2"
+            ></div>
+          </div>
+
+          <div class="storage-diagnostics">
+            <span class="diag-chip">
+              <i class="fa-solid fa-clock-rotate-left"></i>
+              <span>Recent Files: <strong>{{ recentFilesCount() }}</strong></span>
+            </span>
+            <span class="diag-chip" [class.diag-chip--active]="hasActiveDraft()">
+              <i class="fa-solid" [ngClass]="hasActiveDraft() ? 'fa-circle-check' : 'fa-circle-notch'"></i>
+              <span>Active Draft Session: <strong>{{ hasActiveDraft() ? 'Cached' : 'None' }}</strong></span>
+            </span>
+            <span class="diag-chip">
+              <i class="fa-solid fa-shield"></i>
+              <span>Storage Location: <strong>IndexedDB (Device Local)</strong></span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Backup & Migration Actions -->
+        <div class="backup-card">
+          <div class="backup-card__meta">
+            <div class="backup-card__title-row">
+              <i class="fa-solid fa-file-export text-primary"></i>
+              <strong>Configuration Backup &amp; Portability</strong>
+            </div>
+            <p class="backup-card__desc pf-text-muted">
+              Export your preferred theme, zoom, and annotation defaults to a JSON file, or restore them onto any device.
+            </p>
+          </div>
+          <div class="backup-card__buttons">
+            <button
+              type="button"
+              class="pf-btn pf-btn--ghost pf-btn--sm"
+              (click)="exportSettings()"
+              title="Download settings JSON"
+            >
+              <i class="fa-solid fa-download"></i>
+              <span>Export Backup</span>
+            </button>
+            <button
+              type="button"
+              class="pf-btn pf-btn--ghost pf-btn--sm"
+              (click)="importInput.click()"
+              title="Import settings JSON"
+            >
+              <i class="fa-solid fa-upload"></i>
+              <span>Restore Settings</span>
+            </button>
+            <input
+              #importInput
+              type="file"
+              accept=".json,application/json"
+              class="d-none"
+              (change)="importSettings($event)"
+            />
+          </div>
+        </div>
+
+        <!-- Management Actions -->
+        <div class="storage-actions">
+          <div class="storage-action-row">
+            <div class="storage-action-row__meta">
+              <strong>Clear Recent Documents History</strong>
+              <span class="pf-text-muted">
+                Removes all recent PDF records and previews from your browser history.
+              </span>
+            </div>
+            <button
+              type="button"
+              class="pf-btn pf-btn--ghost"
+              [disabled]="clearingRecent()"
+              (click)="clearRecentFiles()"
+            >
+              @if (clearingRecent()) {
+                <i class="fa-solid fa-spinner fa-spin"></i>
+                <span>Clearing…</span>
+              } @else {
+                <i class="fa-solid fa-trash-can"></i>
+                <span>Clear History</span>
+              }
+            </button>
+          </div>
+
+          <div class="storage-action-row">
+            <div class="storage-action-row__meta">
+              <strong>Purge Cached Active Document</strong>
+              <span class="pf-text-muted">
+                Deletes the last restored working document and draft annotations from IndexedDB.
+              </span>
+            </div>
+            <button
+              type="button"
+              class="pf-btn pf-btn--ghost"
+              [disabled]="clearingDoc()"
+              (click)="clearPersistedDocument()"
+            >
+              @if (clearingDoc()) {
+                <i class="fa-solid fa-spinner fa-spin"></i>
+                <span>Purging…</span>
+              } @else {
+                <i class="fa-solid fa-eraser"></i>
+                <span>Purge Cache</span>
+              }
+            </button>
+          </div>
+
+          <div class="storage-action-row storage-action-row--danger">
+            <div class="storage-action-row__meta">
+              <strong class="text-danger">Reset All Settings &amp; Local Storage</strong>
+              <span class="pf-text-muted">
+                Reverts all preferences to system defaults and wipes all local document records.
+              </span>
+            </div>
+            <button
+              type="button"
+              class="pf-btn pf-btn--danger"
+              (click)="resetAllData()"
+            >
+              <i class="fa-solid fa-triangle-exclamation"></i>
+              <span>Reset Everything</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 5: Keyboard Shortcuts Quick Reference -->
+      <div class="settings-section pf-card">
+        <div class="settings-section__header">
+          <div class="settings-section__icon-badge">
+            <i class="fa-solid fa-keyboard"></i>
+          </div>
+          <div>
+            <h2 class="settings-section__title">Keyboard Shortcuts Reference</h2>
+            <p class="settings-section__subtitle pf-text-muted">
+              Boost your productivity with studio shortcuts for tool selection, navigation, and history.
+            </p>
+          </div>
+        </div>
+
+        <div class="shortcuts-grid">
+          @for (grp of shortcutGroups; track grp.category) {
+            <div class="shortcut-group-card">
+              <div class="shortcut-group-card__header">
+                <i [ngClass]="grp.icon"></i>
+                <h3>{{ grp.category }}</h3>
+              </div>
+              <ul class="shortcut-list">
+                @for (item of grp.items; track item.key) {
+                  <li class="shortcut-list__item">
+                    <span class="shortcut-list__desc">{{ item.desc }}</span>
+                    <kbd class="shortcut-kbd">{{ item.key }}</kbd>
+                  </li>
+                }
+              </ul>
+            </div>
           }
         </div>
       </div>
 
-      <div class="settings-row">
-        <div>
-          <h3>Reduce motion</h3>
-          <p class="pf-text-muted">Minimize non-essential animations.</p>
+      <!-- Section 6: Privacy Architecture Guarantees -->
+      <div class="settings-section pf-card">
+        <div class="settings-section__header">
+          <div class="settings-section__icon-badge settings-section__icon-badge--privacy">
+            <i class="fa-solid fa-shield-halved"></i>
+          </div>
+          <div>
+            <h2 class="settings-section__title">Privacy Architecture</h2>
+            <p class="settings-section__subtitle pf-text-muted">
+              iPDFEditor is built around strict zero-knowledge principles.
+            </p>
+          </div>
         </div>
-        <button
-          type="button"
-          class="switch"
-          role="switch"
-          [attr.aria-checked]="reduceMotion()"
-          [class.switch--on]="reduceMotion()"
-          (click)="toggleMotion()"
-        >
-          <span class="switch__thumb"></span>
-        </button>
-      </div>
-    </div>
 
-    <div class="settings-card pf-card">
-      <h2 class="settings-card__title">Privacy</h2>
-      <p class="pf-text-muted">
-        PDFForge processes everything on your device. Nothing is uploaded,
-        stored on a server, or shared.
-      </p>
-      <ul class="settings-list">
-        <li><i class="fa-solid fa-shield-halved"></i> No account required</li>
-        <li><i class="fa-solid fa-server"></i> No servers, no uploads</li>
-        <li><i class="fa-solid fa-trash-can"></i> Clear local data anytime</li>
-      </ul>
+        <div class="privacy-ribbon">
+          <div class="privacy-pill-card">
+            <i class="fa-solid fa-cloud-slash"></i>
+            <div>
+              <strong>0 Bytes Cloud Upload</strong>
+              <span>Documents never travel across the network.</span>
+            </div>
+          </div>
+          <div class="privacy-pill-card">
+            <i class="fa-solid fa-user-xmark"></i>
+            <div>
+              <strong>No Accounts or Logins</strong>
+              <span>No user tracking, advertising, or identification.</span>
+            </div>
+          </div>
+          <div class="privacy-pill-card">
+            <i class="fa-solid fa-microchip"></i>
+            <div>
+              <strong>In-Memory WASM Processing</strong>
+              <span>Heavy compute executed directly inside browser workers.</span>
+            </div>
+          </div>
+          <div class="privacy-pill-card">
+            <i class="fa-solid fa-shield-cat"></i>
+            <div>
+              <strong>Total Data Sovereignty</strong>
+              <span>Your files remain exclusively under your hardware control.</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </section>

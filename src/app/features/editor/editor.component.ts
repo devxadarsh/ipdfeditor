@@ -7,66 +7,483 @@ import {
   viewChild,
   ElementRef,
   ChangeDetectionStrategy,
+  ChangeDetectorRef,
+  OnDestroy,
+  HostListener,
 } from '@angular/core';
-import { NgClass, KeyValuePipe } from '@angular/common';
-import { HostListener } from '@angular/core';
+import { Router, RouterLink } from '@angular/router';
+import { NgClass, NgStyle, KeyValuePipe } from '@angular/common';
+import {
+  NgxExtendedPdfViewerModule,
+  PagesLoadedEvent,
+} from 'ngx-extended-pdf-viewer';
 import { EDITOR_TOOLS } from '../../core/constants/tools';
-import { PdfToolId, SignatureResult, DigitalSignatureRequest } from '../../core/models/pdf.models';
-import { LoadedFile } from '../../core/models/file.models';
+import {
+  PdfToolId,
+  DrawingMode,
+  PdfAnnotation,
+  DrawingAnnotation,
+  ShapeAnnotation,
+  ShapeKind,
+  TextAnnotation,
+  HighlightAnnotation,
+  ImageAnnotation,
+  SignatureAnnotation,
+  StampAnnotation,
+  BlendMode,
+  AspectRatioMode,
+  IconStyleType,
+  ResizeMode,
+} from '../../core/models/pdf.models';
+import {
+  SHAPE_CATEGORIES,
+  SHAPE_DEFINITIONS,
+  ICON_CATEGORIES,
+  ICON_DEFINITIONS,
+  ALL_SHAPE_DEFINITIONS,
+  ICON_STYLE_OPTIONS,
+} from '../../core/constants/shapes';
+import { LoadedFile, StoredEditorState } from '../../core/models/file.models';
 import { FileDropzoneComponent } from '../../shared/components/dropzone/file-dropzone.component';
+import { SignatureModalComponent, SignatureResult } from '../../shared/components/signature-modal/signature-modal.component';
+import { StampModalComponent, StampResult } from '../../shared/components/stamp-modal/stamp-modal.component';
+import { ExportModalComponent } from '../../shared/components/export-modal/export-modal.component';
+import { DetailedExportOptions, ExportProgressUpdate, sanitizePdfFilename } from '../../core/models/export.models';
 import { FileService } from '../../core/services/file/file.service';
 import { DownloadService } from '../../core/services/download/download.service';
-import { PdfViewerService, PageSize } from '../../core/services/pdf/pdf-viewer.service';
-import { PdfExportService, ExportTextEdit } from '../../core/services/pdf/pdf-export.service';
-import { PdfSignService } from '../../core/services/pdf/pdf-sign.service';
+import {
+  PdfViewerService,
+  PageSize,
+  PdfTextSpan,
+  PdfPageTextData,
+  calcMatchNormRect,
+} from '../../core/services/pdf/pdf-viewer.service';
+import { PdfExportService } from '../../core/services/pdf/pdf-export.service';
 import { ToastService } from '../../core/services/toast.service';
-import { SignatureBridgeService } from '../../core/services/signature-bridge.service';
+import { DialogService } from '../../core/services/dialog.service';
+import { DocumentStorageService } from '../../core/services/storage/document-storage.service';
+import { RecentFilesService, RecentFileEntry } from '../../core/services/storage/recent-files.service';
+import { formatRelativeTime } from '../../core/utilities/time.util';
+import { formatBytes } from '../../core/utilities/file.util';
 import { PdfPageComponent } from './components/pdf-page/pdf-page.component';
-import { PageThumbnailComponent } from './components/page-thumbnail/page-thumbnail.component';
 import { EditorOverlayComponent } from './components/editor-overlay/editor-overlay.component';
-import { EditorTextLayerComponent } from './components/editor-text-layer/editor-text-layer.component';
 import { PropertiesPanelComponent } from './components/properties-panel/properties-panel.component';
-import { SignatureDialogComponent } from './components/signature-dialog/signature-dialog.component';
-import { StampDialogComponent } from './components/stamp-dialog/stamp-dialog.component';
+import { PagesPanelComponent } from './components/pages-panel/pages-panel.component';
+import { TextEditOverlayComponent } from './components/text-edit-overlay/text-edit-overlay.component';
+import { EditorPage } from './models/editor-page.model';
 import { EditorPagesService } from './state/editor-pages.service';
 import { EditorStateService } from './state/editor-state.service';
-import { EditorHistoryService } from './state/editor-history.service';
+import { EditorTextEditService } from './services/editor-text-edit.service';
+import { PdfContentEditService } from './services/pdf-content-edit.service';
+import type { TextRun, EditCommand } from '../../core/services/pdf/content-edit/text-run.model';
+import { resolveFontStyles, computeConsistentLetterSpacing, sampleCanvasBackgroundColor } from '../../core/utilities/font-matcher.util';
+
+import { MobileTooltipDirective } from '../../shared/directives/mobile-tooltip.directive';
+
+import { SeoService } from '../../core/services/seo/seo.service';
+import { SEO_CONFIGS } from '../../core/constants/seo-data';
+
+export interface SearchMatch {
+  readonly id: string;
+  readonly pageIndex: number;
+  readonly pageId: string;
+  readonly normRect: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly text: string;
+}
 
 @Component({
   selector: 'app-editor',
   standalone: true,
   imports: [
+    RouterLink,
     NgClass,
+    NgStyle,
     KeyValuePipe,
+    NgxExtendedPdfViewerModule,
     FileDropzoneComponent,
+    SignatureModalComponent,
+    StampModalComponent,
+    ExportModalComponent,
     PdfPageComponent,
-    PageThumbnailComponent,
     EditorOverlayComponent,
-    EditorTextLayerComponent,
     PropertiesPanelComponent,
-    SignatureDialogComponent,
-    StampDialogComponent,
+    PagesPanelComponent,
+    TextEditOverlayComponent,
+    MobileTooltipDirective,
   ],
   templateUrl: './editor.component.html',
   styleUrl: './editor.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class EditorComponent {
+export class EditorComponent implements OnDestroy {
   private readonly files = inject(FileService);
   private readonly viewer = inject(PdfViewerService);
   private readonly exporter = inject(PdfExportService);
-  private readonly signer = inject(PdfSignService);
   private readonly downloads = inject(DownloadService);
   private readonly toasts = inject(ToastService);
-  private readonly signatureBridge = inject(SignatureBridgeService);
+  private readonly dialog = inject(DialogService);
+  private readonly router = inject(Router);
+  private readonly storage = inject(DocumentStorageService);
+  private readonly recentFiles = inject(RecentFilesService);
+  private readonly seo = inject(SeoService);
+  private readonly cdr = inject(ChangeDetectorRef);
   readonly pagesStore = inject(EditorPagesService);
   readonly state = inject(EditorStateService);
-  readonly history = inject(EditorHistoryService);
+  /** Text content-edit engine service — wired for Prompt 5 click-to-edit. */
+  readonly textEdit = inject(EditorTextEditService);
+  /** Export pipeline for text content edits — wired for Prompt 6. */
+  readonly contentEditExport = inject(PdfContentEditService);
 
   readonly exporting = signal(false);
-  readonly viewbarVisible = signal(true);
+  readonly isFullscreen = signal(false);
+  /** Session-level workspace preferences; collapsed panels remain as icon rails. */
+  readonly pagesPanelCollapsed = signal(
+    typeof localStorage !== 'undefined' &&
+      localStorage.getItem('ipdfeditor.show-thumbnails') === 'false',
+  );
+  readonly propertiesPanelCollapsed = signal(false);
+
+  /** Recent file entries for landing page and dropdown. */
+  readonly recentEntries = signal<RecentFileEntry[]>([]);
+  /** Controls visibility of the recent files dropdown on desktop. */
+  readonly showRecentDropdown = signal(false);
+  readonly recentSearch = signal<string>('');
+
+  readonly currentDocName = computed(
+    () => this.files.currentFiles()[0]?.name ?? '',
+  );
+
+  readonly formatBytes = formatBytes;
+
+  readonly filteredRecentEntries = computed(() => {
+    const q = this.recentSearch().trim().toLowerCase();
+    const currentName = this.currentDocName().trim().toLowerCase();
+    let list = this.recentEntries();
+
+    // Filter out the currently opened file
+    if (currentName) {
+      list = list.filter((e) => e.name.toLowerCase() !== currentName);
+    }
+
+    if (q) {
+      list = list.filter((e) => e.name.toLowerCase().includes(q));
+    }
+
+    return [...list].sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      return b.lastOpenedAt - a.lastOpenedAt;
+    });
+  });
+
+  /** Blob URL handed to ngx-extended-pdf-viewer to load the document. */
+  readonly docSrc = signal<string | null>(null);
+  private docUrl: string | null = null;
 
   readonly tools = EDITOR_TOOLS;
+
+  readonly penColorSwatches = ['#111827', '#dc2626', '#2563eb', '#16a34a', '#9333ea', '#f97316'];
+  readonly highlightColorSwatches = ['#fde047', '#86efac', '#7dd3fc', '#fca5a5', '#fdba74', '#d8b4fe'];
+  readonly shapeColorSwatches = ['#2563eb', '#111827', '#dc2626', '#16a34a', '#9333ea', '#f59e0b'];
+  readonly strokeWidthPresets = [2, 4, 8, 14];
+  readonly eraserSizePresets = [8, 16, 24, 36, 48];
+  readonly textFontSizePresets = [12, 14, 16, 20, 24, 32];
+  readonly fontOptions = [
+    { label: 'Sans', value: 'sans-serif' },
+    { label: 'Serif', value: 'serif' },
+    { label: 'Mono', value: 'monospace' },
+    { label: 'Arial', value: 'Arial, sans-serif' },
+    { label: 'Times', value: "'Times New Roman', serif" },
+    { label: 'Courier', value: "'Courier New', monospace" },
+  ];
+
+  readonly selectedTextAnnotation = computed<TextAnnotation | null>(() => {
+    const list = this.state.getSelectedList(this.currentPageId());
+    if (list.length === 1 && list[0].type === 'text') {
+      return list[0] as TextAnnotation;
+    }
+    return null;
+  });
+
+  readonly selectedAnnotation = computed<PdfAnnotation | null>(() => {
+    const list = this.state.getSelectedList(this.currentPageId());
+    return list.length === 1 ? list[0] : null;
+  });
+
+  readonly selectedImageAnnotation = computed<ImageAnnotation | null>(() => {
+    const ann = this.selectedAnnotation();
+    return ann && ann.type === 'image' ? (ann as ImageAnnotation) : null;
+  });
+
+  readonly selectedSignatureAnnotation = computed<SignatureAnnotation | null>(() => {
+    const ann = this.selectedAnnotation();
+    return ann && ann.type === 'signature' ? (ann as SignatureAnnotation) : null;
+  });
+
+  readonly mobileBlendModes: ReadonlyArray<{ value: BlendMode; label: string }> = [
+    { value: 'normal', label: 'Normal' },
+    { value: 'multiply', label: 'Multiply' },
+    { value: 'screen', label: 'Screen' },
+    { value: 'overlay', label: 'Overlay' },
+    { value: 'darken', label: 'Darken' },
+    { value: 'lighten', label: 'Lighten' },
+    { value: 'difference', label: 'Diff' },
+  ];
+
+  readonly mobileRatioModes: ReadonlyArray<{ value: AspectRatioMode; label: string }> = [
+    { value: 'free', label: 'Free' },
+    { value: 'original', label: 'Orig' },
+    { value: '1:1', label: '1:1' },
+    { value: '4:3', label: '4:3' },
+    { value: '16:9', label: '16:9' },
+    { value: '3:2', label: '3:2' },
+  ];
+
+  setImageBlendMode(mode: BlendMode): void {
+    const img = this.selectedImageAnnotation() || this.selectedSignatureAnnotation();
+    if (img && !img.locked) {
+      this.state.updateAnnotation(img.id, { blendMode: mode });
+    }
+  }
+
+  setImageAspectRatioMode(mode: AspectRatioMode): void {
+    const img = this.selectedImageAnnotation();
+    if (!img || img.locked) return;
+    const updates: Partial<ImageAnnotation> = {
+      aspectRatioMode: mode,
+      lockAspectRatio: mode !== 'free',
+    };
+    let ratio: number | null = null;
+    if (mode === 'original') {
+      ratio = img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : null;
+    } else if (mode === '1:1') {
+      ratio = 1;
+    } else if (mode === '4:3') {
+      ratio = 4 / 3;
+    } else if (mode === '16:9') {
+      ratio = 16 / 9;
+    } else if (mode === '3:2') {
+      ratio = 3 / 2;
+    }
+
+    if (ratio && ratio > 0) {
+      const currentW = img.rect.width;
+      const newH = Math.round(currentW / ratio);
+      updates.rect = { ...img.rect, height: newH };
+    }
+
+    this.state.updateAnnotation(img.id, updates);
+  }
+
+  toggleImageLockRatio(): void {
+    const img = this.selectedImageAnnotation() || this.selectedSignatureAnnotation();
+    if (img && !img.locked) {
+      this.state.updateAnnotation(img.id, { lockAspectRatio: !img.lockAspectRatio });
+    }
+  }
+
+  toggleImageFlipH(): void {
+    const img = this.selectedImageAnnotation();
+    if (img && !img.locked) {
+      this.state.updateAnnotation(img.id, { flipHorizontal: !img.flipHorizontal });
+    }
+  }
+
+  toggleImageFlipV(): void {
+    const img = this.selectedImageAnnotation();
+    if (img && !img.locked) {
+      this.state.updateAnnotation(img.id, { flipVertical: !img.flipVertical });
+    }
+  }
+
+  resetImageSize(): void {
+    const img = this.selectedImageAnnotation();
+    if (img && !img.locked) {
+      const nw = img.naturalWidth || 200;
+      const nh = img.naturalHeight || 150;
+      this.state.updateAnnotation(img.id, {
+        rect: { ...img.rect, width: nw, height: nh },
+        aspectRatioMode: 'original',
+        lockAspectRatio: true,
+      });
+    }
+  }
+
+  setTextFontSize(size: number): void {
+    const textAnn = this.selectedTextAnnotation();
+    if (textAnn && !textAnn.locked) {
+      this.state.updateAnnotation(textAnn.id, { fontSize: size } as Partial<TextAnnotation>);
+    }
+    this.state.setTextFontSize(size);
+  }
+
+  setTextFontFamily(family: string): void {
+    const textAnn = this.selectedTextAnnotation();
+    if (textAnn && !textAnn.locked) {
+      this.state.updateAnnotation(textAnn.id, { fontFamily: family } as Partial<TextAnnotation>);
+    }
+    this.state.setTextFontFamily(family);
+  }
+
+  toggleTextBold(): void {
+    const textAnn = this.selectedTextAnnotation();
+    if (textAnn && !textAnn.locked) {
+      const nextWeight = textAnn.fontWeight >= 700 ? 400 : 700;
+      this.state.updateAnnotation(textAnn.id, { fontWeight: nextWeight } as Partial<TextAnnotation>);
+    }
+    this.state.toggleTextBold();
+  }
+
+  toggleTextItalic(): void {
+    const textAnn = this.selectedTextAnnotation();
+    if (textAnn && !textAnn.locked) {
+      this.state.updateAnnotation(textAnn.id, { italic: !textAnn.italic } as Partial<TextAnnotation>);
+    }
+    this.state.toggleTextItalic();
+  }
+
+  toggleTextUnderline(): void {
+    const textAnn = this.selectedTextAnnotation();
+    if (textAnn && !textAnn.locked) {
+      this.state.updateAnnotation(textAnn.id, { underline: !textAnn.underline } as Partial<TextAnnotation>);
+    }
+  }
+
+  setTextAlign(align: 'left' | 'center' | 'right'): void {
+    const textAnn = this.selectedTextAnnotation();
+    if (textAnn && !textAnn.locked) {
+      this.state.updateAnnotation(textAnn.id, { align } as Partial<TextAnnotation>);
+    }
+  }
+
+  rotateSelectedAnnotation(deg = 90): void {
+    const sel = this.selectedAnnotation();
+    if (sel && !sel.locked) {
+      const nextRot = ((sel.rotation || 0) + deg) % 360;
+      this.state.updateAnnotation(sel.id, { rotation: nextRot });
+    }
+  }
+
+  setTextColor(color: string): void {
+    const textAnn = this.selectedTextAnnotation();
+    if (textAnn && !textAnn.locked) {
+      this.state.updateAnnotation(textAnn.id, { color } as Partial<TextAnnotation>);
+    }
+    this.state.setTextColor(color);
+  }
+
+  setShapeStrokeColor(color: string): void {
+    const sel = this.selectedAnnotation();
+    if (sel && sel.type === 'shape' && !sel.locked) {
+      this.state.updateAnnotation(sel.id, { strokeColor: color } as Partial<ShapeAnnotation>);
+    }
+    this.state.setShapeStrokeColor(color);
+  }
+
+  setShapeStrokeWidth(w: number): void {
+    const sel = this.selectedAnnotation();
+    if (sel && sel.type === 'shape' && !sel.locked) {
+      this.state.updateAnnotation(sel.id, { strokeWidth: w } as Partial<ShapeAnnotation>);
+    }
+    this.state.setShapeStrokeWidth(w);
+  }
+
+  toggleShapeFill(): void {
+    const sel = this.selectedAnnotation();
+    if (sel && sel.type === 'shape' && !sel.locked) {
+      const current = (sel as ShapeAnnotation).fillColor;
+      const isTransparent = !current || current === 'transparent';
+      const nextFill = isTransparent ? 'rgba(37,99,235,0.12)' : 'transparent';
+      this.state.updateAnnotation(sel.id, { fillColor: nextFill } as Partial<ShapeAnnotation>);
+    }
+    this.state.toggleShapeFill();
+  }
+
+  setShapeFillColor(color: string): void {
+    const sel = this.selectedAnnotation();
+    if (sel && sel.type === 'shape' && !sel.locked) {
+      this.state.updateAnnotation(sel.id, { fillColor: color } as Partial<ShapeAnnotation>);
+    }
+    this.state.setShapeFillColor(color);
+  }
+
+  setHighlightColor(color: string): void {
+    const sel = this.selectedAnnotation();
+    if (
+      sel &&
+      (sel.type === 'highlight' || sel.type === 'underline' || sel.type === 'strikethrough') &&
+      !sel.locked
+    ) {
+      this.state.updateAnnotation(sel.id, { color } as Partial<HighlightAnnotation>);
+    }
+    const t = this.state.tool();
+    if (t === 'underline') {
+      this.state.setUnderlineColor(color);
+    } else if (t === 'strikethrough') {
+      this.state.setStrikethroughColor(color);
+    } else {
+      this.state.setHighlightColor(color);
+    }
+  }
+
+  readonly hasQuickProps = computed(() => {
+    const t = this.state.tool();
+    const hasSelection = this.state.selectedIds().length > 0;
+    return (
+      hasSelection ||
+      t === 'pen' ||
+      t === 'freehand' ||
+      t === 'eraser' ||
+      t === 'highlight' ||
+      t === 'underline' ||
+      t === 'strikethrough' ||
+      t === 'rectangle' ||
+      t === 'circle' ||
+      t === 'arrow' ||
+      t === 'line' ||
+      t === 'text' ||
+      t === 'select'
+    );
+  });
+
+  setPenColor(c: string): void {
+    this.state.setPenColor(c);
+  }
+  setPenWidth(w: number): void {
+    this.state.setPenStrokeWidth(w);
+  }
+  setFreehandColor(c: string): void {
+    this.state.setFreehandColor(c);
+  }
+  setFreehandWidth(w: number): void {
+    this.state.setFreehandStrokeWidth(w);
+  }
+  setEraserSize(s: number): void {
+    this.state.setEraserSize(s);
+  }
+  setEraserMode(m: 'segment' | 'stroke'): void {
+    this.state.setEraserMode(m);
+  }
+  setEraserTarget(t: 'all' | 'drawing' | 'highlight'): void {
+    this.state.setEraserTarget(t);
+  }
+  setSelectMode(m: 'none' | 'box' | 'lasso'): void {
+    this.state.setSelectMode(m);
+  }
+  selectAllAnnotations(): void {
+    this.state.selectAllAnnotations(this.currentPageId());
+  }
+  clearSelection(): void {
+    this.state.selectAnnotation(null);
+  }
+  setDrawingMode(m: DrawingMode): void {
+    this.state.setDrawingMode(m);
+  }
 
   readonly toolGroups = computed(() => {
     const groups: Record<string, typeof this.tools> = {};
@@ -75,30 +492,320 @@ export class EditorComponent {
     }
     return groups;
   });
+  readonly shapeCategories = SHAPE_CATEGORIES;
+  readonly shapeDefinitions = SHAPE_DEFINITIONS;
+  readonly shapeMenuOpen = signal<boolean>(false);
+  readonly selectedShapeCategory = signal<string>('all');
+  readonly shapeSearchQuery = signal<string>('');
+
+  readonly iconCategories = ICON_CATEGORIES;
+  readonly iconDefinitions = ICON_DEFINITIONS;
+  readonly iconMenuOpen = signal<boolean>(false);
+  readonly selectedIconCategory = signal<string>('all');
+  readonly iconSearchQuery = signal<string>('');
+
+  readonly activeShapeDefinition = computed(() => {
+    const sel = this.selectedAnnotation();
+    const k = (sel && sel.type === 'shape' ? sel.kind : this.state.shapeKind()) || 'rectangle';
+    return this.shapeDefinitions.find((s) => s.id === k) || ALL_SHAPE_DEFINITIONS.find((s) => s.id === k) || this.shapeDefinitions[0];
+  });
+
+  readonly activeIconDefinition = computed(() => {
+    const sel = this.selectedAnnotation();
+    const k = (sel && sel.type === 'shape' && sel.renderMode === 'icon' ? sel.kind : this.state.iconKind()) || 'ui-browser';
+    return this.iconDefinitions.find((s) => s.id === k) || ALL_SHAPE_DEFINITIONS.find((s) => s.id === k) || this.iconDefinitions[0];
+  });
+
+  readonly filteredShapes = computed(() => {
+    const q = this.shapeSearchQuery().trim().toLowerCase();
+    const cat = this.selectedShapeCategory();
+    return this.shapeDefinitions.filter((s) => {
+      const matchCat = cat === 'all' || s.category === cat;
+      const matchQuery = !q || s.label.toLowerCase().includes(q) || s.id.toLowerCase().includes(q);
+      return matchCat && matchQuery;
+    });
+  });
+
+  readonly filteredIcons = computed(() => {
+    const q = this.iconSearchQuery().trim().toLowerCase();
+    const cat = this.selectedIconCategory();
+    return this.iconDefinitions.filter((s) => {
+      const matchCat = cat === 'all' || s.category === cat;
+      const matchQuery = !q || s.label.toLowerCase().includes(q) || s.id.toLowerCase().includes(q);
+      return matchCat && matchQuery;
+    });
+  });
+
+  readonly mobileCategoryShapes = computed(() => {
+    const cat = this.selectedShapeCategory();
+    if (cat === 'all') {
+      return this.shapeDefinitions;
+    }
+    return this.shapeDefinitions.filter((s) => s.category === cat);
+  });
+
+  readonly mobileCategoryIcons = computed(() => {
+    const cat = this.selectedIconCategory();
+    if (cat === 'all') {
+      return this.iconDefinitions;
+    }
+    return this.iconDefinitions.filter((s) => s.category === cat);
+  });
+
+  readonly mobileCategoryLabel = computed(() => {
+    const catId = this.selectedShapeCategory();
+    if (catId === 'all') return 'All';
+    const c = this.shapeCategories.find((cat) => cat.id === catId);
+    return c ? c.label : catId;
+  });
+
+  readonly mobileIconCategoryLabel = computed(() => {
+    const catId = this.selectedIconCategory();
+    if (catId === 'all') return 'All';
+    const c = this.iconCategories.find((cat) => cat.id === catId);
+    return c ? c.label : catId;
+  });
+
+  setMobileShapeCategory(catId: string): void {
+    this.selectedShapeCategory.set(catId);
+    const catShapes = catId === 'all' ? this.shapeDefinitions : this.shapeDefinitions.filter((s) => s.category === catId);
+    if (catShapes.length > 0 && !catShapes.some((s) => s.id === this.state.shapeKind())) {
+      this.state.setShapeKind(catShapes[0].id);
+      const sel = this.selectedAnnotation();
+      if (sel && sel.type === 'shape') {
+        this.state.updateAnnotation(sel.id, { kind: catShapes[0].id, renderMode: 'shape' });
+      }
+    }
+  }
+
+  setMobileIconCategory(catId: string): void {
+    this.selectedIconCategory.set(catId);
+    const catIcons = catId === 'all' ? this.iconDefinitions : this.iconDefinitions.filter((s) => s.category === catId);
+    if (catIcons.length > 0 && !catIcons.some((s) => s.id === this.state.iconKind())) {
+      this.state.setIconKind(catIcons[0].id);
+      const sel = this.selectedAnnotation();
+      if (sel && sel.type === 'shape') {
+        this.state.updateAnnotation(sel.id, { kind: catIcons[0].id, renderMode: 'icon' });
+      }
+    }
+  }
+
+  openCategoryShapes(catId: string): void {
+    this.selectedShapeCategory.set(catId);
+    this.shapeSearchQuery.set('');
+    this.shapeMenuOpen.set(true);
+  }
+
+  openCategoryIcons(catId: string): void {
+    this.selectedIconCategory.set(catId);
+    this.iconSearchQuery.set('');
+    this.iconMenuOpen.set(true);
+  }
+
+  toggleShapeMenu(): void {
+    this.shapeMenuOpen.update((v) => !v);
+  }
+
+  closeShapeMenu(): void {
+    this.shapeMenuOpen.set(false);
+  }
+
+  toggleIconMenu(): void {
+    this.iconMenuOpen.update((v) => !v);
+  }
+
+  closeIconMenu(): void {
+    this.iconMenuOpen.set(false);
+  }
+
+  onShapeToolClick(event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
+    this.selectTool('shape');
+    if (!isMobile) {
+      this.propertiesPanelCollapsed.set(false);
+      this.closeShapeMenu();
+    } else {
+      this.closeShapeMenu();
+    }
+  }
+
+  onIconToolClick(event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
+    this.selectTool('icon');
+    if (!isMobile) {
+      this.propertiesPanelCollapsed.set(false);
+      this.closeIconMenu();
+    } else {
+      this.closeIconMenu();
+    }
+  }
+
+  selectShapeKind(kind: ShapeKind): void {
+    this.state.setShapeKind(kind);
+    const sel = this.selectedAnnotation();
+    if (sel && sel.type === 'shape') {
+      this.state.updateAnnotation(sel.id, { kind, renderMode: 'shape' });
+    }
+    this.state.setTool('shape');
+    this.closeShapeMenu();
+  }
+
+  selectShapeKindMobile(kind: ShapeKind): void {
+    this.state.setShapeKind(kind);
+    const sel = this.selectedAnnotation();
+    if (sel && sel.type === 'shape') {
+      this.state.updateAnnotation(sel.id, { kind, renderMode: 'shape' });
+    }
+    this.state.setTool('shape');
+  }
+
+  selectIconKind(kind: ShapeKind): void {
+    this.state.setIconKind(kind);
+    const sel = this.selectedAnnotation();
+    if (sel && sel.type === 'shape') {
+      this.state.updateAnnotation(sel.id, { kind, renderMode: 'icon' });
+    }
+    this.state.setTool('icon');
+    this.closeIconMenu();
+  }
+
+  selectIconKindMobile(kind: ShapeKind): void {
+    this.state.setIconKind(kind);
+    const sel = this.selectedAnnotation();
+    if (sel && sel.type === 'shape') {
+      this.state.updateAnnotation(sel.id, { kind, renderMode: 'icon' });
+    }
+    this.state.setTool('icon');
+  }
+
+  toggleAnnotationRenderMode(ann: ShapeAnnotation): void {
+    const next = (ann.renderMode || 'shape') === 'icon' ? 'shape' : 'icon';
+    this.state.updateAnnotation(ann.id, { renderMode: next });
+  }
+
+  readonly iconStyleOptions = ICON_STYLE_OPTIONS;
+
+  setAnnotationIconStyle(ann: ShapeAnnotation, style: IconStyleType): void {
+    this.state.updateAnnotation(ann.id, { iconStyle: style });
+  }
+
+  getAnnotationIconStyle(ann: ShapeAnnotation): IconStyleType {
+    return ann.iconStyle || this.state.iconStyle() || 'outlined';
+  }
+
+  iconLabelOf(kind: ShapeKind): string {
+    const s = this.iconDefinitions.find((def) => def.id === kind) || ALL_SHAPE_DEFINITIONS.find((def) => def.id === kind);
+    return s ? s.label : kind;
+  }
+
+  shapeLabelOf(kind: ShapeKind): string {
+    const s = this.shapeDefinitions.find((def) => def.id === kind) || ALL_SHAPE_DEFINITIONS.find((def) => def.id === kind);
+    return s ? s.label : kind;
+  }
+
+  getShapeIconClass(ann: ShapeAnnotation): string {
+    const s = ALL_SHAPE_DEFINITIONS.find((def) => def.id === ann.kind);
+    return s ? s.icon : 'fa-solid fa-shapes';
+  }
+
+  toggleAnnotationResizeMode(ann: ShapeAnnotation): void {
+    const curr = ann.resizeMode || this.state.resizeMode();
+    const modes: ResizeMode[] = ['fixed', 'item', 'free'];
+    const idx = modes.indexOf(curr as ResizeMode);
+    const next = modes[(idx + 1) % modes.length];
+    this.state.updateAnnotation(ann.id, { resizeMode: next });
+  }
+
+  resizeModePillLabel(mode: ResizeMode): string {
+    if (mode === 'fixed') return '1:1';
+    if (mode === 'item') return 'Item';
+    return 'Free';
+  }
+
+  resizeModePillTitle(mode: ResizeMode): string {
+    if (mode === 'fixed') return 'Resize: Fixed 1:1 (Tap for Item Ratio)';
+    if (mode === 'item') return 'Resize: Item Ratio (Tap for Free Hand)';
+    return 'Resize: Free Hand (Tap for Fixed 1:1)';
+  }
+
+  resizeModePillIcon(mode: ResizeMode): string {
+    if (mode === 'fixed') return 'fa-solid fa-square';
+    if (mode === 'item') return 'fa-solid fa-lock';
+    return 'fa-solid fa-arrows-up-down-left-right';
+  }
+
   readonly docName = signal<string | null>(null);
   readonly loading = signal(false);
   readonly searchQuery = signal('');
+  readonly searchMatches = signal<SearchMatch[]>([]);
+  readonly currentMatchIndex = signal(-1);
   readonly searchHits = signal<number[]>([]);
-  readonly searchTotal = signal(0);
-  readonly searchHitIndex = signal(-1);
+  readonly searchTotal = computed(() => this.searchMatches().length);
+  readonly searchHitIndex = computed(() => this.currentMatchIndex());
 
+  readonly matchesByPage = computed<Map<string, SearchMatch[]>>(() => {
+    const map = new Map<string, SearchMatch[]>();
+    for (const m of this.searchMatches()) {
+      const list = map.get(m.pageId);
+      if (list) {
+        list.push(m);
+      } else {
+        map.set(m.pageId, [m]);
+      }
+    }
+    return map;
+  });
+
+  getSearchMatchesForPage(pageId: string): SearchMatch[] {
+    return this.matchesByPage().get(pageId) || [];
+  }
+
+  hasSearchMatchesForPage(pageId: string): boolean {
+    const matches = this.matchesByPage().get(pageId);
+    return matches !== undefined && matches.length > 0;
+  }
+
+  isMatchActive(matchId: string): boolean {
+    const idx = this.currentMatchIndex();
+    const list = this.searchMatches();
+    return idx >= 0 && idx < list.length && list[idx].id === matchId;
+  }
+
+  private readonly editorRef = viewChild<ElementRef<HTMLDivElement>>('editor');
   private readonly stageRef = viewChild<ElementRef<HTMLDivElement>>('stage');
-  private readonly imageInputRef =
-    viewChild<ElementRef<HTMLInputElement>>('imageInput');
+  private readonly pagesStackRef = viewChild<ElementRef<HTMLElement>>('pagesStack');
+  readonly imageInputRef = viewChild<ElementRef<HTMLInputElement>>('imageFileInput');
+  readonly isSignatureModalOpen = signal<boolean>(false);
+  readonly isStampModalOpen = signal<boolean>(false);
+  readonly isExportModalOpen = signal<boolean>(false);
+  readonly exportProgress = signal<ExportProgressUpdate | null>(null);
+  readonly defaultExportFilename = computed<string>(() => {
+    const name = this.docName();
+    const suffix = localStorage.getItem('ipdfeditor.default-export-suffix') || '-edited';
+    if (!name) return `document${suffix}.pdf`;
+    return name.replace(/\.pdf$/i, '') + `${suffix}.pdf`;
+  });
   readonly stageSize = signal<{ width: number; height: number }>({
     width: 0,
     height: 0,
   });
-  readonly signatureOpen = signal(false);
-  readonly stampOpen = signal(false);
   readonly baseSizes = signal<Map<number, PageSize>>(new Map());
 
   private loadedRef: LoadedFile | null = null;
   private searchTimer?: ReturnType<typeof setTimeout>;
-  private dragId: string | null = null;
+  private autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private ro?: ResizeObserver;
+  private pageAnnotationViewports = new Map<
+    string,
+    { width: number; height: number; rotation?: number }
+  >();
 
-  readonly pagesList = this.pagesStore.pages;
   readonly totalPages = this.pagesStore.pagesCount;
   readonly currentPageNumber = computed(() => this.pagesStore.currentIndex() + 1);
   readonly currentSourceIndex = computed(
@@ -107,47 +814,343 @@ export class EditorComponent {
   readonly currentRotation = computed(
     () => this.pagesStore.currentPage()?.rotation ?? 0,
   );
-  readonly selectedCount = this.pagesStore.selectedCount;
 
   readonly currentPageId = computed(() => this.pagesStore.currentId());
   readonly currentAnnotations = computed(() =>
     this.state.annotationsFor(this.currentPageId()),
   );
 
-  readonly displaySize = computed<{
-    width: number;
-    height: number;
-    scale: number;
-  } | null>(() => {
-    const idx = this.currentSourceIndex();
-    if (idx < 0) {
-      return null;
+  // ── Content-Edit Overlay (Prompt 5) ────────────────────────────────────────
+
+  /** Whether the content-edit tool is currently active. */
+  readonly isContentEditMode = computed(() => this.state.tool() === 'content-edit');
+
+  /** The TextRun currently being edited (null if none). */
+  readonly activeTextRun = computed<TextRun | null>(() => {
+    if (!this.isContentEditMode()) return null;
+    const id = this.textEdit.activeRunId();
+    if (!id) return null;
+    return this.textEdit.runs().find((r) => r.id === id) ?? null;
+  });
+
+  /**
+   * Page height in PDF points for coordinate conversion (PDF y-axis flip).
+   * Uses the base page size stored after the PDF is loaded.
+   */
+  readonly currentPageHeightPt = computed<number>(() => {
+    const idx = this.pagesStore.currentPage()?.sourceIndex ?? 0;
+    const rot = this.pagesStore.currentPage()?.rotation ?? 0;
+    const base = this.baseSizes().get(idx) ?? { width: 595.28, height: 841.89 };
+    return rot % 180 === 0 ? base.height : base.width;
+  });
+
+  /**
+   * Hit-test: called when the user clicks on the PDF page canvas area in
+   * content-edit mode. Determines which TextRun (if any) was clicked and
+   * activates the overlay for it.
+   *
+   * Coordinate math:
+   *   The click event gives (offsetX, offsetY) in CSS pixels relative to
+   *   the page's rendered container (top-left origin).
+   *   TextRun.boundingBox is in PDF points with bottom-left origin.
+   *   We convert both to the same space:
+   *     pdfX = offsetX / scale
+   *     pdfY = (pageHeightPt - offsetY / scale)   [flip y]
+   *   Then check if (pdfX, pdfY) is inside the run's bounding box.
+   */
+  async onPageCanvasClick(event: MouseEvent, page: EditorPage): Promise<void> {
+    // Always stop propagation — never let the click reach the page wrapper
+    // or any ancestor that could trigger navigation / scroll side-effects.
+    event.stopPropagation();
+    event.preventDefault();
+
+    if (!this.isContentEditMode()) return;
+
+    // Ensure active page matches the clicked page
+    if (this.pagesStore.currentId() !== page.id) {
+      this.pagesStore.setCurrent(page.id);
+      const pdfBytes = this.loadedRef?.data;
+      if (pdfBytes) {
+        await this.textEdit.loadPage(pdfBytes, page.sourceIndex);
+      }
     }
-    const base = this.baseSizes().get(idx);
-    if (!base) {
-      return null;
+
+    if (this.textEdit.isLoading()) return;
+
+    const scale = this.getPageDisplaySize(page).scale;
+
+    // Use getBoundingClientRect for reliable click coordinates relative to page frame
+    const target = event.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const clickX = (event.clientX - rect.left) / scale;
+    const clickY = (event.clientY - rect.top) / scale;
+
+    const pad = 4 / scale; // 4px tolerance in PDF points
+    const runs = this.textEdit.runs();
+    for (const run of runs) {
+      const bb = run.boundingBox;
+      if (
+        clickX >= bb.x - pad &&
+        clickX <= bb.x + bb.width + pad &&
+        clickY >= bb.y - pad &&
+        clickY <= bb.y + bb.height + pad
+      ) {
+        const pageFrame = target.closest('.editor__page-frame');
+        const canvas = pageFrame?.querySelector('canvas') as HTMLCanvasElement | null;
+        let detectedBg = '#ffffff';
+        if (canvas) {
+          const sample = sampleCanvasBackgroundColor(canvas, bb, scale);
+          detectedBg = this.rgbToHex(sample);
+        }
+        this.textEdit.activateRun(run.id, detectedBg);
+        this.propertiesPanelCollapsed.set(false);
+        this.cdr.markForCheck();
+        return;
+      }
     }
-    const rot = this.currentRotation();
+
+    // Click was outside all runs on empty canvas — deactivate.
+    this.textEdit.deactivate();
+    this.cdr.markForCheck();
+  }
+
+  /** Called when the text overlay commits an edit (blur or Enter). */
+  onTextRunCommitted(cmd: EditCommand): void {
+    // Keep active run so properties panel remains visible and accessible
+    this.textEdit.applyEdit(cmd, true);
+    this.cdr.markForCheck();
+    // PendingStreamEdit is accumulated in EditorTextEditService._pendingEdits.
+    // PdfContentEditService.exportDocument() reads it at export time (Prompt 6).
+  }
+
+  /** Called when the text overlay is cancelled (Escape). */
+  onTextRunCancelled(): void {
+    this.textEdit.deactivate();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Computes CSS styles for committed edited text runs so they stay visible
+   * and persistent on the page canvas with area matching the updated text.
+   */
+  getRunPatchStyles(run: TextRun, page: EditorPage): Record<string, string> {
+    const scale = this.getPageDisplaySize(page).scale;
+    const bb = run.boundingBox;
+    const overrides = run.styleOverrides;
+    const styles = resolveFontStyles(run.fontName || run.fontResource);
+
+    const fontSize = overrides?.fontSize ?? run.fontSize;
+    const fontSizePx = Math.round(fontSize * scale * 100) / 100;
+
+    const padX = Math.round((overrides?.paddingX ?? 0) * scale);
+    const padY = Math.round((overrides?.paddingY ?? 0) * scale);
+    const marginX = Math.round((overrides?.marginX ?? 0) * scale);
+    const marginY = Math.round((overrides?.marginY ?? 0) * scale);
+
+    const maxTightHeight = fontSize > 0 ? fontSize * 1.08 : bb.height;
+    const tightH = bb.height > maxTightHeight && fontSize >= 4 ? maxTightHeight : bb.height;
+    const diffY = bb.height - tightH;
+    const tightY = diffY > 0 ? bb.y + diffY * 0.55 : bb.y;
+
+    const r = {
+      left: Math.round(bb.x * scale) + marginX,
+      top: Math.round(tightY * scale) + marginY,
+      width: Math.max(4, Math.round(bb.width * scale)),
+      height: Math.max(4, Math.round(tightH * scale)),
+    };
+
+    let letterSpacingCss: string;
+    if (overrides?.letterSpacing !== undefined) {
+      letterSpacingCss = `${overrides.letterSpacing * scale}px`;
+    } else {
+      const orig = this.textEdit.getOriginalRun(run.id) ?? run;
+      const spacing = computeConsistentLetterSpacing(
+        orig.text,
+        orig.boundingBox.width * scale,
+        fontSizePx,
+        orig.fontName || orig.fontResource,
+        orig.charSpacing,
+        scale,
+      );
+      letterSpacingCss = spacing === 0 ? 'normal' : `${spacing}px`;
+    }
+
+    const wordSpacingCss =
+      typeof run.wordSpacing === 'number' && Math.abs(run.wordSpacing) > 0.01
+        ? `${Math.round(run.wordSpacing * scale * 10) / 10}px`
+        : 'normal';
+
+    const hasBg =
+      overrides?.backgroundEnabled &&
+      overrides?.backgroundColor &&
+      overrides.backgroundColor !== 'transparent';
+
+    return {
+      left: `${r.left}px`,
+      top: `${r.top}px`,
+      minWidth: `${r.width}px`,
+      width: 'max-content',
+      height: `${r.height}px`,
+      color: overrides?.color ?? EditorTextEditService.pdfColorToCss(run.color),
+      'background-color': overrides?.backgroundColor || '#ffffff',
+      'font-family': overrides?.fontFamily ?? styles.fontFamily,
+      'font-weight': overrides?.fontWeight ? `${overrides.fontWeight}` : styles.fontWeight,
+      'font-style': overrides?.fontStyle ?? styles.fontStyle,
+      'text-decoration': overrides?.underline ? 'underline' : 'none',
+      'font-size': `${fontSizePx}px`,
+      'letter-spacing': letterSpacingCss,
+      'word-spacing': wordSpacingCss,
+      'line-height':
+        overrides?.lineHeight !== undefined ? `${overrides.lineHeight}` : `${r.height}px`,
+      'text-align': overrides?.textAlign ?? 'left',
+      'text-transform': overrides?.textTransform ?? 'none',
+      padding: `${padY}px ${padX}px`,
+      opacity: overrides?.opacity !== undefined ? `${overrides.opacity}` : '1',
+    };
+  }
+
+  /**
+   * Masks the original text area on the PDF canvas while a run is actively
+   * being edited, so original glyphs never peek through if text is shortened.
+   */
+  getActiveRunMaskStyles(run: TextRun, page: EditorPage): Record<string, string> {
+    const scale = this.getPageDisplaySize(page).scale;
+    const orig = this.textEdit.getOriginalRun(run.id) ?? run;
+    const bb = orig.boundingBox;
+    const fs = orig.fontSize;
+    const maxTightHeight = fs > 0 ? fs * 1.08 : bb.height;
+    const tightH = bb.height > maxTightHeight && fs >= 4 ? maxTightHeight : bb.height;
+    const diffY = bb.height - tightH;
+    const tightY = diffY > 0 ? bb.y + diffY * 0.55 : bb.y;
+    return {
+      left: `${Math.round(bb.x * scale)}px`,
+      top: `${Math.round(tightY * scale)}px`,
+      width: `${Math.max(4, Math.round(bb.width * scale))}px`,
+      height: `${Math.max(4, Math.round(tightH * scale))}px`,
+    };
+  }
+
+  /**
+   * Masks the original text area on the PDF canvas so any remaining old glyphs
+   * are completely hidden, even if the new text is shorter.
+   */
+  getRunOriginalMaskStyles(run: TextRun, page: EditorPage): Record<string, string> {
+    const scale = this.getPageDisplaySize(page).scale;
+    const orig = this.textEdit.getOriginalRun(run.id) ?? run;
+    const bb = orig.boundingBox;
+    const fs = orig.fontSize;
+    const maxTightHeight = fs > 0 ? fs * 1.08 : bb.height;
+    const tightH = bb.height > maxTightHeight && fs >= 4 ? maxTightHeight : bb.height;
+    const diffY = bb.height - tightH;
+    const tightY = diffY > 0 ? bb.y + diffY * 0.55 : bb.y;
+    return {
+      left: `${Math.round(bb.x * scale)}px`,
+      top: `${Math.round(tightY * scale)}px`,
+      width: `${Math.max(4, Math.round(bb.width * scale))}px`,
+      height: `${Math.max(4, Math.round(tightH * scale))}px`,
+    };
+  }
+
+  /** Clicking on an already-edited persistent text patch allows re-editing it. */
+  onPatchClick(event: MouseEvent, run: TextRun, page: EditorPage): void {
+    if (!this.isContentEditMode()) return;
+    event.stopPropagation();
+    event.preventDefault();
+    if (this.pagesStore.currentId() !== page.id) {
+      this.pagesStore.setCurrent(page.id);
+    }
+    const target = event.currentTarget as HTMLElement;
+    const pageFrame = target.closest('.editor__page-frame');
+    const canvas = pageFrame?.querySelector('canvas') as HTMLCanvasElement | null;
+    const scale = this.getPageDisplaySize(page).scale;
+    let detectedBg = '#ffffff';
+    if (canvas) {
+      const sample = sampleCanvasBackgroundColor(canvas, run.boundingBox, scale);
+      detectedBg = this.rgbToHex(sample);
+    }
+    this.textEdit.activateRun(run.id, detectedBg);
+    this.propertiesPanelCollapsed.set(false);
+  }
+
+  private rgbToHex(color: string): string {
+    if (color.startsWith('#')) {
+      if (color.length === 4) {
+        return `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`;
+      }
+      return color.slice(0, 7);
+    }
+    const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+    if (match) {
+      const r = Number(match[1]).toString(16).padStart(2, '0');
+      const g = Number(match[2]).toString(16).padStart(2, '0');
+      const b = Number(match[3]).toString(16).padStart(2, '0');
+      return `#${r}${g}${b}`;
+    }
+    return '#ffffff';
+  }
+
+  getPageDisplaySize(page: EditorPage): { width: number; height: number; scale: number } {
+    const idx = page.sourceIndex;
+    const base = this.baseSizes().get(idx) ?? { width: 595.28, height: 841.89 };
+    const rot = page.rotation;
     const rotatedW = rot % 180 === 0 ? base.width : base.height;
     const rotatedH = rot % 180 === 0 ? base.height : base.width;
     const stage = this.stageSize();
     const fit = this.state.fitMode();
     let scale: number;
     if (fit === 'width') {
-      scale = (stage.width - 32) / rotatedW;
+      const padding = stage.width < 768 ? 36 : 48;
+      scale = Math.max(0.1, (stage.width - padding) / rotatedW);
     } else if (fit === 'page') {
+      const paddingX = stage.width < 768 ? 36 : 48;
+      const paddingY = stage.width < 768 ? 32 : 48;
       scale = Math.min(
-        (stage.width - 32) / rotatedW,
-        (stage.height - 32) / rotatedH,
+        (stage.width - paddingX) / rotatedW,
+        (stage.height - paddingY) / rotatedH,
       );
     } else {
       scale = this.state.zoom();
     }
-    scale = Math.max(0.1, scale);
-    return { width: rotatedW * scale, height: rotatedH * scale, scale };
+    const isMobile = stage.width < 768;
+    const minZoom = isMobile ? 0.4 : 0.1;
+    const maxZoom = isMobile ? 3.5 : 5.0;
+    scale = Math.min(maxZoom, Math.max(minZoom, scale));
+    return { width: Math.round(rotatedW * scale), height: Math.round(rotatedH * scale), scale };
+  }
+
+  readonly displaySize = computed<{
+    width: number;
+    height: number;
+    scale: number;
+  } | null>(() => {
+    const curr = this.pagesStore.currentPage();
+    return curr ? this.getPageDisplaySize(curr) : null;
   });
 
+  readonly pinchLiveZoom = signal<number | null>(null);
+
+  readonly renderWindow = computed(() => {
+    const curr = this.pagesStore.currentIndex();
+    const total = this.pagesStore.pagesCount();
+    if (curr < 0 || total === 0) {
+      return { min: 0, max: 2 };
+    }
+    return {
+      min: Math.max(0, curr - 1),
+      max: Math.min(total - 1, curr + 1),
+    };
+  });
+
+  isPageInRenderWindow(idx: number): boolean {
+    const w = this.renderWindow();
+    return idx >= w.min && idx <= w.max;
+  }
+
   readonly zoomLabel = computed(() => {
+    const live = this.pinchLiveZoom();
+    if (live !== null) {
+      return `${Math.round(live * 100)}%`;
+    }
     if (this.state.fitMode() === 'width') {
       return 'Fit width';
     }
@@ -162,198 +1165,1530 @@ export class EditorComponent {
       return '';
     }
     const total = this.searchTotal();
-    const pageCount = this.searchHits().length;
     if (total === 0) {
-      return 'No matches';
+      return '0 of 0';
     }
-    const matches = `${total} match${total !== 1 ? 'es' : ''}`;
-    const pages = `${pageCount} page${pageCount !== 1 ? 's' : ''}`;
-    return `${matches} · ${pages}`;
+    const curr = this.currentMatchIndex();
+    return `${curr + 1} of ${total}`;
+  });
+
+  readonly eraserSvgSize = computed(() => {
+    const s = Math.max(
+      this.state.eraserSize(),
+      this.state.eraserSize() * this.state.eraserTolerance(),
+    );
+    return s + 24;
+  });
+
+  readonly eraserSvgViewBox = computed(() => {
+    const s = this.eraserSvgSize();
+    const half = s / 2;
+    return `-${half} -${half} ${s} ${s}`;
+  });
+
+  getAnnotationIcon(type: string): string {
+    switch (type) {
+      case 'hand':
+        return 'fa-solid fa-hand';
+      case 'select':
+        return 'fa-solid fa-arrow-pointer';
+      case 'pen':
+        return 'fa-solid fa-pen';
+      case 'freehand':
+        return 'fa-solid fa-paintbrush';
+      case 'eraser':
+        return 'fa-solid fa-eraser';
+      case 'rectangle':
+        return 'fa-regular fa-square';
+      case 'circle':
+        return 'fa-regular fa-circle';
+      case 'arrow':
+        return 'fa-solid fa-arrow-right';
+      case 'line':
+        return 'fa-solid fa-minus';
+      case 'text':
+        return 'fa-solid fa-font';
+      case 'drawing':
+        return 'fa-solid fa-pen-nib';
+      case 'shape':
+        return this.activeShapeDefinition().icon;
+      case 'icon':
+        return this.activeIconDefinition().icon;
+      case 'highlight':
+        return 'fa-solid fa-highlighter';
+      case 'underline':
+        return 'fa-solid fa-underline';
+      case 'strikethrough':
+        return 'fa-solid fa-strikethrough';
+      case 'comment':
+        return 'fa-solid fa-comment';
+      case 'image':
+        return 'fa-solid fa-image';
+      case 'signature':
+        return 'fa-solid fa-signature';
+      case 'stamp':
+        return 'fa-solid fa-stamp';
+      default:
+        return 'fa-solid fa-crop-simple';
+    }
+  }
+
+  readonly currentToolName = computed(() => {
+    const pending = this.state.pendingPlacement();
+    if (pending) {
+      return pending.type === 'image' ? 'Place Image' : 'Place Stamp';
+    }
+    const t = this.state.tool();
+    const match = EDITOR_TOOLS.find((tool) => tool.id === t);
+    return match ? `${match.label} Tool` : 'Tool';
+  });
+
+  readonly currentToolIcon = computed(() => {
+    const pending = this.state.pendingPlacement();
+    if (pending) {
+      return pending.type === 'image' ? 'fa-solid fa-image' : 'fa-solid fa-stamp';
+    }
+    const t = this.state.tool();
+    return this.getAnnotationIcon(t);
+  });
+
+  readonly currentToolHint = computed(() => {
+    const pending = this.state.pendingPlacement();
+    if (pending) {
+      return pending.type === 'image'
+        ? 'Tap page to place image'
+        : 'Tap page to place stamp';
+    }
+    const t = this.state.tool();
+    const selCount = this.state.selectedIds().length;
+    if (selCount > 0) {
+      return selCount === 1 ? '1 item selected' : `${selCount} items selected`;
+    }
+    switch (t) {
+      case 'hand':
+        return 'Pan & Pinch to zoom';
+      case 'select':
+        return 'Tap or drag box to select';
+      case 'pen':
+        return 'Natural ink pen';
+      case 'freehand':
+        return 'Freehand sketch';
+      case 'eraser':
+        return 'Cut segments or erase strokes';
+      case 'text':
+        return 'Tap page to add text';
+      case 'shape':
+        return 'Drag or tap to place shape';
+      case 'icon':
+        return 'Drag or tap to place icon';
+      case 'highlight':
+        return 'Highlight text area';
+      case 'underline':
+        return 'Underline text area';
+      case 'strikethrough':
+        return 'Strikethrough text area';
+      case 'rectangle':
+        return 'Draw rectangle';
+      case 'circle':
+        return 'Draw circle';
+      case 'arrow':
+        return 'Draw arrow';
+      case 'line':
+        return 'Draw line';
+      default:
+        return 'Active mode';
+    }
+  });
+
+  readonly hasDrawingPanel = computed(() => {
+    const t = this.state.tool();
+    const hasSelection = this.state.selectedIds().length > 0;
+    return (
+      hasSelection ||
+      t === 'select' ||
+      t === 'pen' ||
+      t === 'freehand' ||
+      t === 'eraser' ||
+      t === 'shape' ||
+      t === 'icon' ||
+      t === 'highlight' ||
+      t === 'underline' ||
+      t === 'strikethrough' ||
+      t === 'rectangle' ||
+      t === 'circle' ||
+      t === 'arrow' ||
+      t === 'line' ||
+      t === 'text'
+    );
+  });
+
+  readonly activePropertiesSummary = computed(() => {
+    const tool = this.state.tool();
+    const pageId = this.currentPageId();
+    const selectedList = this.state.getSelectedList(pageId);
+    const selectedCount = selectedList.length;
+
+    if (selectedCount > 0) {
+      const first = selectedList[0];
+      const hasGroup = selectedList.some((a) => Boolean(a.groupId));
+      const groupId = first.groupId;
+      const allSameGroup =
+        Boolean(hasGroup && groupId) &&
+        selectedList.every((a) => a.groupId === groupId);
+      const isLocked = selectedList.every((a) => a.locked);
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const a of selectedList) {
+        minX = Math.min(minX, a.rect.x);
+        minY = Math.min(minY, a.rect.y);
+        maxX = Math.max(maxX, a.rect.x + a.rect.width);
+        maxY = Math.max(maxY, a.rect.y + a.rect.height);
+      }
+      const width = Math.round(maxX - minX);
+      const height = Math.round(maxY - minY);
+
+      return {
+        type: 'selection' as const,
+        tool,
+        title:
+          selectedCount === 1
+            ? `Selected ${first.type.charAt(0).toUpperCase() + first.type.slice(1)}`
+            : `${selectedCount} objects selected`,
+        icon:
+          selectedCount === 1
+            ? this.getAnnotationIcon(first.type)
+            : 'fa-solid fa-object-group',
+        groupLabel: allSameGroup
+          ? `Group (${groupId})`
+          : hasGroup
+            ? 'Mixed group'
+            : 'Ungrouped',
+        bounds: { x: Math.round(minX), y: Math.round(minY), width, height },
+        isLocked,
+        selectedCount,
+        first,
+      };
+    }
+
+    switch (tool) {
+      case 'pen':
+        return {
+          type: 'pen' as const,
+          tool,
+          title: 'Pen Tool',
+          icon: 'fa-solid fa-pen-nib',
+          color: this.state.penColor(),
+          strokeWidth: this.state.penStrokeWidth(),
+          smoothing: this.state.penSmoothing(),
+          drawingMode: this.state.drawingMode(),
+          drawingModeLabel:
+            this.state.drawingMode() === 'continuous'
+              ? 'Natural Ink'
+              : 'Border Area',
+        };
+      case 'freehand':
+        return {
+          type: 'freehand' as const,
+          tool,
+          title: 'Freehand Tool',
+          icon: 'fa-solid fa-paintbrush',
+          color: this.state.freehandColor(),
+          strokeWidth: this.state.freehandStrokeWidth(),
+          smoothing: this.state.penSmoothing(),
+          drawingMode: this.state.drawingMode(),
+          drawingModeLabel:
+            this.state.drawingMode() === 'continuous'
+              ? 'Natural Ink'
+              : 'Border Area',
+        };
+      case 'eraser':
+        return {
+          type: 'eraser' as const,
+          tool,
+          title: 'Eraser Tool',
+          icon: 'fa-solid fa-eraser',
+          size: this.state.eraserSize(),
+          eraserMode: this.state.eraserMode(),
+          eraserModeLabel:
+            this.state.eraserMode() === 'segment'
+              ? 'Cut / Segment'
+              : 'Whole Stroke',
+          target: this.state.eraserTarget(),
+          targetLabel:
+            this.state.eraserTarget() === 'all'
+              ? 'All Objects'
+              : this.state.eraserTarget() === 'drawing'
+                ? 'Ink Only'
+                : 'Highlights',
+        };
+      case 'rectangle':
+      case 'circle':
+      case 'arrow':
+      case 'line':
+        return {
+          type: 'shape' as const,
+          tool,
+          title:
+            tool === 'rectangle'
+              ? 'Rectangle Tool'
+              : tool === 'circle'
+                ? 'Circle Tool'
+                : tool === 'arrow'
+                  ? 'Arrow Tool'
+                  : 'Line Tool',
+          icon:
+            tool === 'rectangle'
+              ? 'fa-regular fa-square'
+              : tool === 'circle'
+                ? 'fa-regular fa-circle'
+                : tool === 'arrow'
+                  ? 'fa-solid fa-arrow-right'
+                  : 'fa-solid fa-minus',
+          strokeColor: localStorage.getItem('ipdfeditor.default-color') || '#000000',
+          strokeWidth: 2,
+          shapeKind: tool,
+        };
+      case 'text':
+        return {
+          type: 'text' as const,
+          tool,
+          title: 'Text Tool',
+          icon: 'fa-solid fa-font',
+          fontFamily: 'Inter',
+          fontSize: parseInt(localStorage.getItem('ipdfeditor.default-font-size') || '16', 10) || 16,
+          align: 'left',
+          color: localStorage.getItem('ipdfeditor.default-color') || '#111827',
+        };
+      case 'highlight':
+      case 'underline':
+      case 'strikethrough':
+        return {
+          type: 'markup' as const,
+          tool,
+          title:
+            tool === 'highlight'
+              ? 'Highlight Tool'
+              : tool === 'underline'
+                ? 'Underline Tool'
+                : 'Strikethrough Tool',
+          icon:
+            tool === 'highlight'
+              ? 'fa-solid fa-highlighter'
+              : tool === 'underline'
+                ? 'fa-solid fa-underline'
+                : 'fa-solid fa-strikethrough',
+          color:
+            tool === 'highlight'
+              ? '#fef08a'
+              : tool === 'underline'
+                ? '#3b82f6'
+                : '#ef4444',
+          opacity: 0.6,
+        };
+      case 'hand':
+        return {
+          type: 'hand' as const,
+          tool,
+          title: 'Hand Tool',
+          icon: 'fa-solid fa-hand',
+          description: 'Drag or pinch to pan and explore page',
+        };
+      default:
+        return {
+          type: 'default' as const,
+          tool,
+          title: 'Select Tool',
+          icon: 'fa-solid fa-arrow-pointer',
+          annotationsCount: this.currentAnnotations().length,
+          description:
+            this.currentAnnotations().length > 0
+              ? `${this.currentAnnotations().length} annotation${this.currentAnnotations().length !== 1 ? 's' : ''} on page`
+              : 'Click on any annotation or drag to select',
+        };
+    }
   });
 
   constructor() {
-    effect(
-      () => {
-        const file = this.files.currentFiles()[0];
-        if (!file || this.loadedRef === file) {
-          return;
-        }
-        void this.load(file);
-      },
-      { allowSignalWrites: true },
-    );
+    this.seo.updatePage(SEO_CONFIGS['editor']);
 
-    effect(
-      () => {
-        this.pagesStore.currentId();
-        this.state.clearSelection();
-      },
-      { allowSignalWrites: true },
-    );
+    effect(() => {
+      const file = this.files.currentFiles()[0];
+      if (!file || this.loadedRef === file) {
+        return;
+      }
+      void this.load(file);
+    });
 
-    effect(
-      () => {
-        const stage = this.stageRef()?.nativeElement;
-        this.ro?.disconnect();
-        this.ro = undefined;
-        if (!stage) {
-          return;
+    document.addEventListener('touchstart', this.onGlobalTouchStart, { passive: false });
+    document.addEventListener('touchmove', this.onGlobalTouchStart, { passive: false });
+
+    // On mobile, default to click-only selection (no drag marquee)
+    if (window.innerWidth < 768) {
+      this.state.setSelectMode('none');
+    }
+
+    // Auto-restore last-opened document from IndexedDB on page reload.
+    // Runs once on init — if no file is currently loaded and auto-save is enabled,
+    // attempt to restore the persisted document so it seamlessly survives a reload.
+    if (this.files.currentFiles().length === 0) {
+      const autoSaveEnabled =
+        typeof localStorage !== 'undefined'
+          ? localStorage.getItem('ipdfeditor.auto-save') !== 'false'
+          : true;
+      if (autoSaveEnabled) {
+        void this.files.restoreLastDocument();
+      }
+    }
+
+    // Load recent files list from IndexedDB for landing page and dropdown
+    void this.loadRecentEntries();
+
+    // Connect silent auto-save handler to state service so tool actions trigger immediate saves
+    this.state.setAutoSaveHandler(() => this.autoSaveSilently());
+
+    effect(() => {
+      this.pagesStore.currentId();
+      this.state.clearSelection();
+    });
+
+    // Annotation rectangles use the same coordinate system as the PDF overlay.
+    // Reproject them whenever fit-width/fit-page/zoom or window resize changes the rendered page.
+    effect(() => {
+      // Guard: do not scale while document is loading or stage is unmeasured
+      if (
+        this.loading() ||
+        this.stageSize().width <= 0 ||
+        this.stageSize().height <= 0
+      ) {
+        return;
+      }
+
+      // Track dependencies: zoom, fitMode, stageSize, baseSizes
+      this.state.zoom();
+      this.state.fitMode();
+      this.stageSize();
+      this.baseSizes();
+
+      const pages = this.pagesStore.pages();
+      if (pages.length === 0) {
+        return;
+      }
+
+      for (const page of pages) {
+        const size = this.getPageDisplaySize(page);
+        if (!size || size.width <= 0 || size.height <= 0) {
+          continue;
         }
-        const update = () =>
-          this.stageSize.set({
-            width: stage.clientWidth,
-            height: stage.clientHeight,
+
+        const previous = this.pageAnnotationViewports.get(page.id);
+        if (!previous) {
+          // Baseline established at settled layout size without scaling
+          this.pageAnnotationViewports.set(page.id, {
+            width: size.width,
+            height: size.height,
+            rotation: page.rotation,
           });
-        this.ro = new ResizeObserver(update);
-        this.ro.observe(stage);
-        update();
-      },
-      { allowSignalWrites: true },
-    );
-
-    effect(
-      () => {
-        const file = this.files.currentFiles()[0];
-        const pending = this.signatureBridge.pending();
-        if (!file || !pending) {
-          return;
+          continue;
         }
-        this.state.setPendingMedia({
-          kind: 'signature',
-          dataUrl: pending.dataUrl,
-          naturalWidth: pending.width,
-          naturalHeight: pending.height,
+
+        // If page rotation changed, update baseline without scaling aspect ratios
+        if (
+          previous.rotation !== undefined &&
+          previous.rotation !== page.rotation
+        ) {
+          this.pageAnnotationViewports.set(page.id, {
+            width: size.width,
+            height: size.height,
+            rotation: page.rotation,
+          });
+          continue;
+        }
+
+        const scaleX = size.width / previous.width;
+        const scaleY = size.height / previous.height;
+
+        if (
+          Number.isFinite(scaleX) &&
+          Number.isFinite(scaleY) &&
+          scaleX > 0 &&
+          scaleY > 0 &&
+          (Math.abs(scaleX - 1) > 0.001 || Math.abs(scaleY - 1) > 0.001)
+        ) {
+          this.state.scaleAnnotations(page.id, scaleX, scaleY);
+          this.pageAnnotationViewports.set(page.id, {
+            width: size.width,
+            height: size.height,
+            rotation: page.rotation,
+          });
+        }
+      }
+    });
+
+    // The canvas stage is conditionally rendered only once a document is open,
+    // so it does not exist at ngAfterViewInit. Re-create the ResizeObserver
+    // whenever the stage element appears or disappears.
+    effect(() => {
+      this.stageRef();
+      this.observeStage();
+    });
+
+    // Bridge export trigger from header / menu bar
+    effect(() => {
+      const trigger = this.state.exportTrigger();
+      if (trigger > 0) {
+        void this.exportPdf();
+      }
+    });
+
+    // When in content-edit mode, ensure text runs are loaded for the active page
+    effect(() => {
+      if (!this.isContentEditMode()) {
+        return;
+      }
+      const page = this.pagesStore.currentPage();
+      const pdfBytes = this.loadedRef?.data;
+      if (page && pdfBytes) {
+        void this.textEdit.loadPage(pdfBytes, page.sourceIndex);
+      }
+    });
+  }
+
+  readonly isMobileSearchOpen = signal(false);
+
+  toggleMobileSearch(): void {
+    this.isMobileSearchOpen.update((v) => !v);
+  }
+
+  closeMobileSearch(): void {
+    this.isMobileSearchOpen.set(false);
+  }
+
+  readonly Math = Math;
+
+  toggleDrawingMode(): void {
+    const next: DrawingMode =
+      this.state.drawingMode() === 'continuous' ? 'autoselect' : 'continuous';
+    this.state.setDrawingMode(next);
+  }
+
+  toggleEraserMode(): void {
+    const next = this.state.eraserMode() === 'segment' ? 'stroke' : 'segment';
+    this.state.setEraserMode(next);
+  }
+
+  openPropertiesSheet(): void {
+    this.state.setMobilePropertiesOpen(true);
+  }
+
+  closePropertiesSheet(): void {
+    this.state.setMobilePropertiesOpen(false);
+  }
+
+  getAnnotationColor(a: PdfAnnotation | undefined): string | null {
+    if (!a) return null;
+    if (a.type === 'drawing') return a.color;
+    if (a.type === 'shape') return a.strokeColor;
+    if (a.type === 'text') return a.color;
+    if (a.type === 'highlight' || a.type === 'underline' || a.type === 'strikethrough') return a.color;
+    return null;
+  }
+
+  getAnnotationStrokeWidth(a: PdfAnnotation | undefined): number | null {
+    if (!a) return null;
+    if (a.type === 'drawing') return a.strokeWidth;
+    if (a.type === 'shape') return a.strokeWidth;
+    return null;
+  }
+
+  setSelectionColor(c: string): void {
+    const pageId = this.currentPageId();
+    const list = this.state.getSelectedList(pageId);
+    if (list.length === 0) return;
+    for (const a of list) {
+      if (a.locked) continue;
+      if (a.type === 'drawing') {
+        this.state.updateAnnotation(a.id, { color: c } as Partial<DrawingAnnotation>);
+      } else if (a.type === 'shape') {
+        this.state.updateAnnotation(a.id, { strokeColor: c } as Partial<ShapeAnnotation>);
+      } else if (a.type === 'text') {
+        this.state.updateAnnotation(a.id, { color: c } as Partial<TextAnnotation>);
+      } else if (a.type === 'highlight' || a.type === 'underline' || a.type === 'strikethrough') {
+        this.state.updateAnnotation(a.id, { color: c } as Partial<HighlightAnnotation>);
+      }
+    }
+  }
+
+  setSelectionWidth(w: number): void {
+    const pageId = this.currentPageId();
+    const list = this.state.getSelectedList(pageId);
+    if (list.length === 0) return;
+    for (const a of list) {
+      if (a.locked) continue;
+      if (a.type === 'drawing') {
+        this.state.updateAnnotation(a.id, { strokeWidth: w } as Partial<DrawingAnnotation>);
+      } else if (a.type === 'shape') {
+        this.state.updateAnnotation(a.id, { strokeWidth: w } as Partial<ShapeAnnotation>);
+      }
+    }
+  }
+
+  deleteSelected(): void {
+    this.state.deleteSelected(this.currentPageId());
+  }
+
+  duplicateSelected(): void {
+    this.state.duplicateSelected(this.currentPageId());
+  }
+
+  toggleLockSelected(): void {
+    const pageId = this.currentPageId();
+    const list = this.state.getSelectedList(pageId);
+    if (list.length === 1) {
+      this.state.toggleLock(list[0].id);
+    } else {
+      this.state.toggleBatchLock(pageId);
+    }
+  }
+
+  bringSelectedToFront(): void {
+    this.state.bringSelectedToFront(this.currentPageId());
+  }
+
+  sendSelectedToBack(): void {
+    this.state.sendSelectedToBack(this.currentPageId());
+  }
+
+  groupSelected(): void {
+    this.state.groupSelected(this.currentPageId());
+  }
+
+  ungroupSelected(): void {
+    this.state.ungroupSelected(this.currentPageId());
+  }
+
+  openPagesSheet(): void {
+    this.state.setMobilePagesOpen(true);
+  }
+
+  closePagesSheet(): void {
+    this.state.setMobilePagesOpen(false);
+  }
+
+  // ── Recent Files & File Switching ──────────────────────────────────
+
+  /** Load recent file entries from IndexedDB. */
+  async loadRecentEntries(): Promise<void> {
+    const entries = await this.recentFiles.getAll();
+    this.recentEntries.set(entries);
+  }
+
+  /** Format a timestamp as relative time for display. */
+  getRelativeTime(timestamp: number): string {
+    return formatRelativeTime(timestamp);
+  }
+
+  /** Toggle the recent files dropdown on desktop. */
+  toggleRecentDropdown(): void {
+    if (!this.showRecentDropdown()) {
+      void this.loadRecentEntries();
+    }
+    this.showRecentDropdown.update((v) => !v);
+  }
+
+  /** Close the recent files dropdown. */
+  closeRecentDropdown(): void {
+    this.showRecentDropdown.set(false);
+  }
+
+  @HostListener('document:click', ['$event'])
+  onDocumentClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement | null;
+    if (this.showRecentDropdown() && !target?.closest('.editor__open-file-group')) {
+      this.showRecentDropdown.set(false);
+    }
+    if (
+      this.shapeMenuOpen() &&
+      !target?.closest('.editor__tool-dropdown-wrap') &&
+      !target?.closest('.editor__bottomsheet--shapes') &&
+      !target?.closest('.editor__dp-pill') &&
+      !target?.closest('.pf-shape-popover')
+    ) {
+      this.shapeMenuOpen.set(false);
+    }
+  }
+
+  private readonly globalKeydownCaptureListener = (event: KeyboardEvent): void => {
+    const isModifier = event.ctrlKey || event.metaKey;
+    if (isModifier && event.key && event.key.toLowerCase() === 's' && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (this.docName()) {
+        void this.onManualSaveClick();
+      }
+    }
+  };
+
+  async ngOnInit(): Promise<void> {
+    this.state.setSaveLocallyHandler(() => this.saveDocumentLocally());
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', this.globalKeydownCaptureListener, { capture: true });
+    }
+    await this.loadRecentEntries();
+  }
+
+  private getStoredEditorState(): StoredEditorState {
+    const pages = this.pagesStore.pages().map((p) => ({ ...p }));
+    const viewports: Record<string, { width: number; height: number }> = {};
+    for (const p of pages) {
+      const sz = this.getPageDisplaySize(p);
+      if (sz.width > 0 && sz.height > 0) {
+        viewports[p.id] = { width: sz.width, height: sz.height };
+        this.pageAnnotationViewports.set(p.id, {
+          width: sz.width,
+          height: sz.height,
+          rotation: p.rotation,
         });
-        this.state.setTool('signature');
-        this.signatureBridge.clear();
-        this.toasts.info('Click on the page to place your signature.');
-      },
-      { allowSignalWrites: true },
-    );
+      }
+    }
+    return {
+      pages,
+      annotations: this.state.getSerializedAnnotations(),
+      currentId: this.pagesStore.currentId(),
+      viewports,
+    };
+  }
 
-    effect(
-      () => {
-        const file = this.files.currentFiles()[0];
-        const pending = this.signatureBridge.pendingDigital();
-        if (!file || !pending) {
+  /**
+   * Silently auto-saves changes to IndexedDB when user loses cursor or touch.
+   * Does NOT burn annotations into PDF bytes, does NOT reload the viewer, and does NOT flash toasts.
+   */
+  async autoSaveSilently(): Promise<void> {
+    const file = this.files.currentFiles()[0];
+    if (!file || this.loading() || !this.state.modified()) {
+      return;
+    }
+    const autoSaveEnabled =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('ipdfeditor.auto-save') !== 'false'
+        : true;
+    if (!autoSaveEnabled) {
+      return;
+    }
+
+    this.state.setIsSaving(true);
+    try {
+      const editorState = this.getStoredEditorState();
+      const pages = editorState.pages ?? [];
+
+      await this.storage.saveDocument(file.name, file.data, editorState);
+      await this.recentFiles.addOrUpdate(
+        file.name,
+        file.data,
+        file.sizeBytes,
+        pages.length,
+        editorState,
+      );
+      if (this.loadedRef) {
+        (this.loadedRef as { editorState?: unknown }).editorState = editorState;
+      }
+      this.state.markSaved();
+    } catch (err) {
+      console.warn('[Editor] Auto-save failed silently:', err);
+    } finally {
+      this.state.setIsSaving(false);
+    }
+  }
+
+  readonly saving = signal(false);
+
+  /**
+   * Manual save triggered by the Save toolbar button or Ctrl/Cmd+S.
+   */
+  async onManualSaveClick(): Promise<void> {
+    if (!this.docName() || this.saving()) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const saved = await this.saveDocumentLocally();
+      if (saved) {
+        this.toasts.success('Progress saved locally');
+      }
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  /**
+   * Saves current document and annotations locally to IndexedDB & Recent Files.
+   * Preserves raw PDF data without re-triggering file loading or duplicating annotations.
+   */
+  async saveDocumentLocally(): Promise<boolean> {
+    const file = this.files.currentFiles()[0];
+    if (!file) {
+      return false;
+    }
+    this.state.setIsSaving(true);
+    try {
+      const editorState = this.getStoredEditorState();
+      const pages = editorState.pages ?? [];
+
+      await this.recentFiles.addOrUpdate(
+        file.name,
+        file.data,
+        file.sizeBytes,
+        pages.length,
+        editorState,
+      );
+
+      const autoSaveEnabled =
+        typeof localStorage !== 'undefined'
+          ? localStorage.getItem('ipdfeditor.auto-save') !== 'false'
+          : true;
+      if (autoSaveEnabled) {
+        await this.storage.saveDocument(file.name, file.data, editorState);
+      }
+
+      if (this.loadedRef) {
+        (this.loadedRef as { editorState?: unknown }).editorState = editorState;
+      }
+      this.state.markSaved();
+      await this.loadRecentEntries();
+      return true;
+    } catch (err) {
+      console.error('[Editor] Could not save document locally:', err);
+      const message =
+        err instanceof Error ? err.message : 'Could not save changes locally.';
+      this.toasts.error(message);
+      return false;
+    } finally {
+      this.state.setIsSaving(false);
+    }
+  }
+
+  /**
+   * Open a new file with unsaved-changes guard.
+   * Used by the "Open File" button on desktop and mobile.
+   */
+  async openNewFile(): Promise<void> {
+    if (this.state.modified()) {
+      const result = await this.dialog.confirm({
+        title: 'Unsaved Changes',
+        message:
+          'You have unsaved edits in this document. What would you like to do?',
+        confirmLabel: 'Save & Open',
+        secondaryLabel: "Don't Save",
+        cancelLabel: 'Cancel',
+        destructive: false,
+      });
+
+      if (!result.confirmed && !result.secondary) {
+        // User clicked Cancel
+        return;
+      }
+
+      if (result.confirmed) {
+        // User clicked "Save & Open" — save locally without downloading
+        const saved = await this.saveDocumentLocally();
+        if (!saved) {
+          return; // Abort switching if save failed
+        }
+      }
+      // If secondary ("Don't Save"), fall through to file picker
+    }
+
+    const picked = await this.files.pickFile(false);
+    if (picked.length > 0) {
+      // Clear content-edit state from the previous document before loading.
+      this.textEdit.reset();
+      await this.files.loadFiles(picked);
+    }
+  }
+
+  /**
+   * Open a specific recent file entry with unsaved-changes guard.
+   * If it matches the stored document in IndexedDB, restores it directly.
+   * Otherwise opens file picker to reload the document from disk.
+   */
+  async openRecentFile(entry: RecentFileEntry): Promise<void> {
+    if (this.state.modified()) {
+      const result = await this.dialog.confirm({
+        title: 'Unsaved Changes',
+        message:
+          'You have unsaved edits in this document. What would you like to do?',
+        confirmLabel: 'Save & Open',
+        secondaryLabel: "Don't Save",
+        cancelLabel: 'Cancel',
+        destructive: false,
+      });
+
+      if (!result.confirmed && !result.secondary) {
+        return;
+      }
+
+      if (result.confirmed) {
+        const saved = await this.saveDocumentLocally();
+        if (!saved) {
+          return; // Abort switching if save failed
+        }
+      }
+    }
+
+    // 1. Load document data directly from RecentFilesService
+    const recentDoc = await this.recentFiles.getFileData(entry.id) ?? await this.recentFiles.getFileDataByName(entry.name);
+    if (recentDoc && recentDoc.data) {
+      const blob = new Blob([recentDoc.data], { type: 'application/pdf' });
+      const file = new File([blob], recentDoc.name, { type: 'application/pdf' });
+      const loaded: LoadedFile = {
+        file,
+        name: recentDoc.name,
+        sizeBytes: recentDoc.data.byteLength,
+        data: recentDoc.data,
+        loadedAt: Date.now(),
+        editorState: recentDoc.editorState,
+      };
+      this.files.setCurrent([loaded]);
+      return;
+    }
+
+    // 2. Fallback: Check last-document in storage
+    const lastDoc = await this.storage.loadDocument();
+    if (lastDoc && lastDoc.name.toLowerCase() === entry.name.toLowerCase()) {
+      const blob = new Blob([lastDoc.data], { type: 'application/pdf' });
+      const file = new File([blob], lastDoc.name, { type: 'application/pdf' });
+      const loaded: LoadedFile = {
+        file,
+        name: lastDoc.name,
+        sizeBytes: lastDoc.data.byteLength,
+        data: lastDoc.data,
+        loadedAt: Date.now(),
+        editorState: lastDoc.editorState,
+      };
+      this.files.setCurrent([loaded]);
+      return;
+    }
+
+    // 3. Fallback: Prompt user if file data is not available in storage
+    this.toasts.info(`Please select "${entry.name}" from your device to reopen.`);
+    const picked = await this.files.pickFile(false);
+    if (picked.length > 0) {
+      await this.files.loadFiles(picked);
+    }
+  }
+
+  /** Toggle pinned state for a recent file entry. */
+  async togglePin(id: string, event: Event): Promise<void> {
+    event.stopPropagation();
+    await this.recentFiles.togglePin(id);
+    await this.loadRecentEntries();
+  }
+
+  onRecentSearchInput(value: string): void {
+    this.recentSearch.set(value);
+  }
+
+  /** Remove a file from the recent list. */
+  async removeRecentEntry(id: string): Promise<void> {
+    await this.recentFiles.remove(id);
+    await this.loadRecentEntries();
+  }
+
+  /** Clear all recent file entries. */
+  async clearRecentEntries(): Promise<void> {
+    const result = await this.dialog.confirm({
+      title: 'Clear Recent Documents',
+      message:
+        'Are you sure you want to clear your local recent documents history? Files on your device will remain intact.',
+      confirmLabel: 'Clear All',
+      cancelLabel: 'Cancel',
+      destructive: true,
+    });
+    if (!result.confirmed) {
+      return;
+    }
+    await this.recentFiles.clearAll();
+    this.recentEntries.set([]);
+    this.toasts.info('Recent history cleared');
+  }
+
+  /** Browser close/reload protection when document has unsaved changes. */
+  @HostListener('window:beforeunload', ['$event'])
+  onBeforeUnload(event: BeforeUnloadEvent): void {
+    if (this.state.modified()) {
+      event.preventDefault();
+    }
+  }
+
+  /** Navigate to /tools with unsaved-changes confirmation. */
+  async onToolsClick(event: MouseEvent): Promise<void> {
+    if (this.state.modified()) {
+      event.preventDefault();
+      const result = await this.dialog.confirm({
+        title: 'Unsaved Changes',
+        message:
+          'You have unsaved edits in this document. What would you like to do before leaving?',
+        confirmLabel: 'Save & Leave',
+        secondaryLabel: "Don't Save",
+        cancelLabel: 'Cancel',
+        destructive: false,
+      });
+
+      if (!result.confirmed && !result.secondary) {
+        return;
+      }
+
+      if (result.confirmed) {
+        const saved = await this.saveDocumentLocally();
+        if (!saved) {
           return;
         }
-        this.state.setDigitalSignature(pending);
-        this.signatureBridge.clear();
-        this.toasts.success(
-          'Digital ID loaded. The PDF will be cryptographically signed on export.',
-        );
-      },
-      { allowSignalWrites: true },
-    );
+      }
+      void this.router.navigate(['/tools']);
+    }
+  }
+
+  private currentStageElement: HTMLElement | null = null;
+  private isPinchActive = false;
+  private pinchStartDist = 0;
+  private pinchStartScale = 1;
+  private pinchCurrentScale = 1;
+  private pinchTargetPageId = '';
+  private pinchFocalPageX = 0;
+  private pinchFocalPageY = 0;
+  private pinchStartFocalDocX = 0;
+  private pinchStartFocalDocY = 0;
+  private pinchCurrentMidX = 0;
+  private pinchCurrentMidY = 0;
+  private pinchInitialStackLeft = 0;
+  private pinchInitialStackTop = 0;
+  private pinchRafId: number | null = null;
+
+  private onGlobalTouchStart = (event: TouchEvent): void => {
+    if (event.touches.length >= 2) {
+      const target = event.target as Element | null;
+      const insideStage = target?.closest('.editor__canvas-stage');
+      if (!insideStage) {
+        event.preventDefault();
+      }
+    }
+  };
+
+  private onTouchStart = (event: TouchEvent): void => {
+    if (event.touches.length === 2) {
+      const t1 = event.touches[0];
+      const t2 = event.touches[1];
+      const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      if (dist < 5) {
+        return;
+      }
+      event.preventDefault();
+
+      const stage = this.stageRef()?.nativeElement;
+      const stack = this.pagesStackRef()?.nativeElement;
+      if (!stage || !stack) {
+        return;
+      }
+
+      const stageRect = stage.getBoundingClientRect();
+      const stackRect = stack.getBoundingClientRect();
+      const midX = (t1.clientX + t2.clientX) / 2;
+      const midY = (t1.clientY + t2.clientY) / 2;
+
+      // Find the page element directly under the pinch midpoint, or the closest active page
+      let targetWrapper = document
+        .elementFromPoint(midX, midY)
+        ?.closest('.editor__page-wrapper') as HTMLElement | null;
+
+      if (!targetWrapper) {
+        const activeId = this.pagesStore.currentId();
+        targetWrapper = activeId
+          ? stage.querySelector<HTMLElement>(`#page-wrapper-${activeId}`)
+          : stage.querySelector<HTMLElement>('.editor__page-wrapper');
+      }
+
+      const pageId =
+        targetWrapper?.getAttribute('data-page-id') ||
+        this.pagesStore.currentId() ||
+        '';
+      const pageFrame = targetWrapper?.querySelector<HTMLElement>(
+        '.editor__page-frame',
+      );
+      const pageRect = pageFrame
+        ? pageFrame.getBoundingClientRect()
+        : stackRect;
+
+      const currentScale = this.displaySize()?.scale ?? this.state.zoom();
+
+      // Focal point relative to the specific target page
+      const focalPageX = (midX - pageRect.left) / currentScale;
+      const focalPageY = (midY - pageRect.top) / currentScale;
+
+      // Physical document coordinates relative to the pages stack root (for live GPU transform)
+      const focalDocX = (midX - stackRect.left) / currentScale;
+      const focalDocY = (midY - stackRect.top) / currentScale;
+
+      this.isPinchActive = true;
+      this.pinchStartDist = dist;
+      this.pinchStartScale = currentScale;
+      this.pinchCurrentScale = currentScale;
+      this.pinchTargetPageId = pageId;
+      this.pinchFocalPageX = focalPageX;
+      this.pinchFocalPageY = focalPageY;
+      this.pinchStartFocalDocX = focalDocX;
+      this.pinchStartFocalDocY = focalDocY;
+      this.pinchCurrentMidX = midX;
+      this.pinchCurrentMidY = midY;
+      this.pinchInitialStackLeft = stackRect.left;
+      this.pinchInitialStackTop = stackRect.top;
+      this.pinchLiveZoom.set(currentScale);
+
+      stack.classList.add('editor__pages-stack--pinching');
+    }
+  };
+
+  private onTouchMove = (event: TouchEvent): void => {
+    if (this.isPinchActive && event.touches.length === 2) {
+      event.preventDefault();
+      const t1 = event.touches[0];
+      const t2 = event.touches[1];
+      const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      const ratio = dist / this.pinchStartDist;
+      const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+      const minZoom = isMobile ? 0.4 : 0.25;
+      const maxZoom = isMobile ? 3.5 : 5.0;
+      this.pinchCurrentScale = Math.min(maxZoom, Math.max(minZoom, this.pinchStartScale * ratio));
+      this.pinchCurrentMidX = (t1.clientX + t2.clientX) / 2;
+      this.pinchCurrentMidY = (t1.clientY + t2.clientY) / 2;
+      this.pinchLiveZoom.set(this.pinchCurrentScale);
+
+      if (!this.pinchRafId) {
+        this.pinchRafId = requestAnimationFrame(() => {
+          this.pinchRafId = null;
+          this.applyPinchTransform();
+        });
+      }
+    }
+  };
+
+  private applyPinchTransform(): void {
+    if (!this.isPinchActive) {
+      return;
+    }
+    const stack = this.pagesStackRef()?.nativeElement;
+    if (!stack) {
+      return;
+    }
+
+    const effectiveRatio = this.pinchCurrentScale / this.pinchStartScale;
+    const localFocalX = this.pinchStartFocalDocX * this.pinchStartScale;
+    const localFocalY = this.pinchStartFocalDocY * this.pinchStartScale;
+
+    const tx = this.pinchCurrentMidX - this.pinchInitialStackLeft - localFocalX * effectiveRatio;
+    const ty = this.pinchCurrentMidY - this.pinchInitialStackTop - localFocalY * effectiveRatio;
+
+    stack.style.transformOrigin = '0 0';
+    stack.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${effectiveRatio})`;
+  }
+
+  private onTouchEnd = (event: TouchEvent): void => {
+    if (this.isPinchActive && event.touches.length < 2) {
+      this.isPinchActive = false;
+      this.pinchLiveZoom.set(null);
+      if (this.pinchRafId) {
+        cancelAnimationFrame(this.pinchRafId);
+        this.pinchRafId = null;
+      }
+
+      const stage = this.stageRef()?.nativeElement;
+      const stack = this.pagesStackRef()?.nativeElement;
+      if (!stage || !stack) {
+        return;
+      }
+
+      const finalScale = this.pinchCurrentScale;
+      const targetPageId = this.pinchTargetPageId;
+      const focalPageX = this.pinchFocalPageX;
+      const focalPageY = this.pinchFocalPageY;
+      const releaseMidX = this.pinchCurrentMidX;
+      const releaseMidY = this.pinchCurrentMidY;
+
+      // Prevent onStageScroll from interfering during commit
+      this.isAutoScrolling = true;
+
+      // Clean up temporary GPU styles
+      stack.style.transform = '';
+      stack.style.transformOrigin = '';
+      stack.classList.remove('editor__pages-stack--pinching');
+
+      // Commit final scale and active page
+      this.state.setZoom(finalScale);
+      if (targetPageId) {
+        this.pagesStore.setCurrent(targetPageId);
+      }
+
+      // Synchronize exact scroll position after DOM layout renders new page sizes
+      requestAnimationFrame(() => {
+        const targetWrapper = targetPageId
+          ? stage.querySelector<HTMLElement>(`#page-wrapper-${targetPageId}`)
+          : null;
+
+        if (targetWrapper) {
+          const frame = targetWrapper.querySelector<HTMLElement>(
+            '.editor__page-frame',
+          );
+          const frameRect = frame
+            ? frame.getBoundingClientRect()
+            : targetWrapper.getBoundingClientRect();
+
+          // Compute exact scroll delta needed to keep focal point under fingers
+          const currentFocalScreenX = frameRect.left + focalPageX * finalScale;
+          const currentFocalScreenY = frameRect.top + focalPageY * finalScale;
+
+          const deltaX = currentFocalScreenX - releaseMidX;
+          const deltaY = currentFocalScreenY - releaseMidY;
+
+          stage.scrollLeft = Math.max(0, Math.round(stage.scrollLeft + deltaX));
+          stage.scrollTop = Math.max(0, Math.round(stage.scrollTop + deltaY));
+        }
+
+        setTimeout(() => {
+          this.isAutoScrolling = false;
+          if (targetPageId) {
+            this.pagesStore.setCurrent(targetPageId);
+          }
+        }, 60);
+      });
+    }
+  };
+
+  private observeStage(): void {
+    const stage = this.stageRef()?.nativeElement;
+    if (this.currentStageElement && this.currentStageElement !== stage) {
+      this.currentStageElement.removeEventListener('touchstart', this.onTouchStart);
+      this.currentStageElement.removeEventListener('touchmove', this.onTouchMove);
+      this.currentStageElement.removeEventListener('touchend', this.onTouchEnd);
+      this.currentStageElement.removeEventListener('touchcancel', this.onTouchEnd);
+    }
+    this.ro?.disconnect();
+    this.ro = undefined;
+    if (!stage) {
+      this.currentStageElement = null;
+      return;
+    }
+    this.currentStageElement = stage;
+    stage.addEventListener('touchstart', this.onTouchStart, { passive: false });
+    stage.addEventListener('touchmove', this.onTouchMove, { passive: false });
+    stage.addEventListener('touchend', this.onTouchEnd, { passive: false });
+    stage.addEventListener('touchcancel', this.onTouchEnd, { passive: false });
+
+    this.ro = new ResizeObserver(() => {
+      this.stageSize.set({
+        width: stage.clientWidth,
+        height: stage.clientHeight,
+      });
+    });
+    this.ro.observe(stage);
+    this.stageSize.set({
+      width: stage.clientWidth,
+      height: stage.clientHeight,
+    });
   }
 
   ngOnDestroy(): void {
+    if (this.pinchRafId) {
+      cancelAnimationFrame(this.pinchRafId);
+      this.pinchRafId = null;
+    }
+    if (this.scrollRafId) {
+      cancelAnimationFrame(this.scrollRafId);
+      this.scrollRafId = null;
+    }
+    document.removeEventListener('touchstart', this.onGlobalTouchStart);
+    document.removeEventListener('touchmove', this.onGlobalTouchStart);
+    if (this.currentStageElement) {
+      this.currentStageElement.removeEventListener('touchstart', this.onTouchStart);
+      this.currentStageElement.removeEventListener('touchmove', this.onTouchMove);
+      this.currentStageElement.removeEventListener('touchend', this.onTouchEnd);
+      this.currentStageElement.removeEventListener('touchcancel', this.onTouchEnd);
+      this.currentStageElement = null;
+    }
     this.ro?.disconnect();
+    if (this.docUrl) {
+      URL.revokeObjectURL(this.docUrl);
+      this.docUrl = null;
+    }
+    this.viewer.reset();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', this.globalKeydownCaptureListener, { capture: true });
+    }
+    this.state.setAutoSaveHandler(null);
+    this.textEdit.reset();
   }
 
   selectTool(id: PdfToolId): void {
     if (id === 'image') {
-      this.openImagePicker();
+      const input = this.imageInputRef()?.nativeElement;
+      if (input) {
+        input.value = '';
+        input.click();
+      }
       return;
     }
     if (id === 'signature') {
-      this.signatureOpen.set(true);
+      this.isSignatureModalOpen.set(true);
       return;
     }
     if (id === 'stamp') {
-      this.stampOpen.set(true);
+      this.isStampModalOpen.set(true);
       return;
+    }
+    if (id === 'shape') {
+      const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
+      if (!isMobile) {
+        this.propertiesPanelCollapsed.set(false);
+      }
+    }
+    if (id === 'content-edit') {
+      // Activate text content editing: load runs for the current page.
+      // Use sourceIndex (original PDF page number) not currentIndex()
+      // (display-order position) — these differ when pages are reordered.
+      const pdfBytes = this.loadedRef?.data;
+      const pageIndex = this.pagesStore.currentPage()?.sourceIndex ?? 0;
+      if (pdfBytes) {
+        void this.textEdit.loadPage(pdfBytes, pageIndex);
+      }
+    } else {
+      // When leaving content-edit mode, cancel any active overlay.
+      if (this.state.tool() === 'content-edit') {
+        this.textEdit.deactivate();
+      }
     }
     this.state.setTool(id);
   }
 
-  private openImagePicker(): void {
-    this.imageInputRef()?.nativeElement.click();
-  }
-
-  onImageFile(event: Event): void {
+  async onImageFileSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file) {
+    if (!input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    if (!file.type.startsWith('image/')) {
+      this.toasts.error('Please select a valid image file (PNG, JPEG, WebP, SVG).');
       return;
     }
+
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
       const img = new Image();
       img.onload = () => {
-        this.state.setPendingMedia({
-          kind: 'image',
+        const pageId = this.pagesStore.currentId() ?? 'p0';
+        const pageIndex = this.pagesStore.currentIndex();
+        const pageSize = this.baseSizes().get(pageIndex) || { width: 595, height: 842 };
+
+        const naturalW = img.naturalWidth || 200;
+        const naturalH = img.naturalHeight || 150;
+        const aspect = naturalW / Math.max(1, naturalH);
+
+        let targetW = Math.min(260, naturalW);
+        let targetH = targetW / aspect;
+        if (targetH > 220) {
+          targetH = 220;
+          targetW = targetH * aspect;
+        }
+
+        this.state.setPendingPlacement({
+          type: 'image',
           dataUrl,
-          naturalWidth: img.naturalWidth,
-          naturalHeight: img.naturalHeight,
+          naturalWidth: naturalW,
+          naturalHeight: naturalH,
+          width: Math.round(targetW),
+          height: Math.round(targetH),
         });
         this.state.setTool('image');
-        this.toasts.info('Click on the page to place the image.');
       };
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   }
 
-  onSignatureResult(result: SignatureResult | null): void {
-    this.signatureOpen.set(false);
-    if (!result) {
-      return;
-    }
-    this.state.setPendingMedia({
-      kind: 'signature',
+  onSignatureSelected(result: SignatureResult): void {
+    this.isSignatureModalOpen.set(false);
+    const pageId = this.pagesStore.currentId() ?? 'p0';
+    const pageIndex = this.pagesStore.currentIndex();
+    const pageSize = this.baseSizes().get(pageIndex) || { width: 595, height: 842 };
+
+    const posX = Math.max(20, Math.round((pageSize.width - result.width) / 2));
+    const posY = Math.max(40, Math.round((pageSize.height - result.height) / 2));
+
+    const ann: SignatureAnnotation = {
+      id: crypto.randomUUID(),
+      type: 'signature',
+      pageIndex,
+      rect: {
+        x: posX,
+        y: posY,
+        width: result.width,
+        height: result.height,
+      },
+      rotation: 0,
+      opacity: 1,
+      createdAt: Date.now(),
       dataUrl: result.dataUrl,
       naturalWidth: result.width,
       naturalHeight: result.height,
+    };
+
+    this.state.addAnnotation(pageId, ann);
+    this.state.setTool('select');
+    this.state.selectAnnotation(ann.id);
+    this.toasts.success('Signature placed on page.');
+  }
+
+  onStampSelected(result: StampResult): void {
+    this.isStampModalOpen.set(false);
+    const stampW = Math.max(160, Math.min(260, result.text.length * 14 + 40));
+    const stampH = 54;
+
+    this.state.setPendingPlacement({
+      type: 'stamp',
+      text: result.text,
+      color: result.color,
+      width: stampW,
+      height: stampH,
     });
-    this.state.setTool('signature');
-    this.toasts.info('Click on the page to place the signature.');
-  }
-
-  onDigitalResult(result: DigitalSignatureRequest | null): void {
-    this.signatureOpen.set(false);
-    if (!result) {
-      return;
-    }
-    this.state.setDigitalSignature(result);
-    this.toasts.success(
-      'Digital ID loaded. The PDF will be cryptographically signed when you export.',
-    );
-  }
-
-  onStampResult(result: { text: string; color: string } | null): void {
-    this.stampOpen.set(false);
-    if (!result) {
-      return;
-    }
-    this.state.setPendingMedia({ kind: 'stamp', text: result.text, color: result.color });
     this.state.setTool('stamp');
-    this.toasts.info('Click on the page to place the stamp.');
+  }
+
+  cancelPendingPlacement(): void {
+    this.state.setPendingPlacement(null);
+    this.state.setTool('select');
+  }
+
+  async toggleFullscreen(): Promise<void> {
+    const editor = this.editorRef()?.nativeElement;
+    if (!editor) {
+      return;
+    }
+    try {
+      if (document.fullscreenElement === editor) {
+        await document.exitFullscreen();
+      } else {
+        await editor.requestFullscreen();
+      }
+    } catch {
+      this.toasts.error('Fullscreen mode is not available in this browser.');
+    }
+  }
+
+  @HostListener('document:fullscreenchange')
+  onFullscreenChange(): void {
+    this.isFullscreen.set(document.fullscreenElement === this.editorRef()?.nativeElement);
+  }
+
+  togglePagesPanel(): void {
+    this.pagesPanelCollapsed.update((collapsed) => !collapsed);
+  }
+
+  togglePropertiesPanel(): void {
+    this.propertiesPanelCollapsed.update((collapsed) => !collapsed);
   }
 
   private async load(file: LoadedFile): Promise<void> {
+    this.loadedRef = file;
     this.loading.set(true);
     this.state.reset();
-    try {
-      const count = await this.viewer.load(file.data);
-      this.docName.set(file.name);
-      this.pagesStore.init(count);
-      this.history.reset();
-      this.clearSearch();
-      this.loadedRef = file;
-      void this.prefetch(count);
-      this.toasts.success(`Opened ${file.name}`);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Could not open the PDF.';
-      this.toasts.error(message);
-      this.docName.set(null);
-    } finally {
-      this.loading.set(false);
+    this.viewer.reset();
+    this.pageAnnotationViewports.clear();
+    this.isAutoScrolling = true;
+    if (this.docUrl) {
+      URL.revokeObjectURL(this.docUrl);
     }
+    this.docUrl = URL.createObjectURL(
+      new File([file.data], file.name, { type: 'application/pdf' }),
+    );
+    this.docName.set(null);
+    this.docSrc.set(this.docUrl);
+  }
+
+  async onPagesLoaded(event: PagesLoadedEvent): Promise<void> {
+    const doc = (event as unknown as { source: { pdfDocument: unknown } })
+      .source.pdfDocument;
+    this.viewer.setDocument(doc);
+    const count = event.pagesCount;
+    this.docName.set(this.loadedRef?.name ?? null);
+
+    // Prefetch all page base sizes before initializing layout so sizes are accurate
+    await this.prefetch(count);
+
+    // If we have saved editor state (pages and annotations), restore them!
+    const savedState = this.loadedRef?.editorState;
+    if (savedState && savedState.pages && savedState.pages.length > 0) {
+      this.pagesStore.restoreState(
+        savedState.pages.map((p) => ({ ...p })),
+        undefined,
+        savedState.currentId,
+      );
+      if (savedState.annotations) {
+        this.state.restoreAnnotations(savedState.annotations);
+      }
+      this.pageAnnotationViewports.clear();
+      if (savedState.viewports) {
+        for (const [pId, vp] of Object.entries(savedState.viewports)) {
+          if (vp && vp.width > 0 && vp.height > 0) {
+            this.pageAnnotationViewports.set(pId, {
+              width: vp.width,
+              height: vp.height,
+            });
+          }
+        }
+      }
+    } else {
+      this.pagesStore.init(count);
+      this.pageAnnotationViewports.clear();
+    }
+
+    this.clearSearch();
+    if (this.loadedRef) {
+      this.toasts.success(`Opened ${this.loadedRef.name}`);
+      // Register in recent files and reset dirty state
+      void this.recentFiles.addOrUpdate(
+        this.loadedRef.name,
+        this.loadedRef.data,
+        this.loadedRef.sizeBytes,
+        count,
+        savedState,
+      ).then(() => this.loadRecentEntries());
+      this.state.markSaved();
+    }
+    this.loading.set(false);
+
+    // Ensure document always starts on page 1 or saved active page with top scroll
+    this.isAutoScrolling = true;
+    const initialPageId =
+      (savedState?.currentId && this.pagesStore.pages().some((p) => p.id === savedState.currentId))
+        ? savedState.currentId
+        : this.pagesStore.pages()[0]?.id;
+
+    if (initialPageId) {
+      this.pagesStore.setCurrent(initialPageId);
+    }
+
+    setTimeout(() => {
+      const stage = this.stageRef()?.nativeElement;
+      if (stage) {
+        stage.scrollTop = 0;
+        stage.scrollLeft = 0;
+      }
+      if (initialPageId) {
+        this.pagesStore.setCurrent(initialPageId);
+      }
+      setTimeout(() => {
+        this.isAutoScrolling = false;
+      }, 100);
+    }, 50);
   }
 
   private async prefetch(count: number): Promise<void> {
@@ -368,234 +2703,591 @@ export class EditorComponent {
   }
 
   /* Page navigation */
-  selectPage(id: string, event?: MouseEvent): void {
-    this.pagesStore.select(id, event);
+  scrollToPage(pageId: string, smooth = true): void {
+    const stage = this.stageRef()?.nativeElement;
+    const el = document.getElementById(`page-wrapper-${pageId}`);
+    if (stage && el) {
+      this.isAutoScrolling = true;
+      el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
+      setTimeout(() => {
+        this.isAutoScrolling = false;
+      }, 400);
+    }
+  }
+
+  onPageSelectFromPanel(pageId: string): void {
+    this.scrollToPage(pageId);
+    if (this.state.mobilePagesOpen()) {
+      this.closePagesSheet();
+    }
   }
 
   nextPage(): void {
     const idx = this.pagesStore.currentIndex();
     const pages = this.pagesStore.pages();
     if (idx < pages.length - 1) {
-      this.pagesStore.setCurrent(pages[idx + 1].id);
+      const nextId = pages[idx + 1].id;
+      this.pagesStore.setCurrent(nextId);
+      this.scrollToPage(nextId);
     }
   }
 
   prevPage(): void {
     const idx = this.pagesStore.currentIndex();
     if (idx > 0) {
-      this.pagesStore.setCurrent(this.pagesStore.pages()[idx - 1].id);
+      const prevId = this.pagesStore.pages()[idx - 1].id;
+      this.pagesStore.setCurrent(prevId);
+      this.scrollToPage(prevId);
     }
   }
 
-  /* Page management actions */
-  selectAll(): void {
-    this.pagesStore.selectAll();
-  }
-
-  clearSelection(): void {
-    this.pagesStore.clearSelection();
-  }
-
-  deleteSelected(): void {
-    this.pagesStore.deleteSelected();
-  }
-
-  duplicateSelected(): void {
-    this.pagesStore.duplicateSelected();
-  }
-
-  rotateLeft(): void {
-    this.pagesStore.rotateSelected(-90);
-  }
-
-  rotateRight(): void {
-    this.pagesStore.rotateSelected(90);
-  }
-
-  extractSelected(): void {
-    void this.pagesStore.extractSelected();
-  }
-
-  /* History */
-  undo(): void {
-    this.history.undo();
-  }
-
-  redo(): void {
-    this.history.redo();
-  }
-
-  toggleTextEdit(): void {
-    this.state.toggleTextEdit();
-  }
-
-  toggleViewbar(): void {
-    this.viewbarVisible.update((v) => !v);
-  }
-
-  @HostListener('window:keydown', ['$event'])
-  onKeydown(event: KeyboardEvent): void {
-    const target = event.target as HTMLElement | null;
-    if (
-      target &&
-      (target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        (target as HTMLElement).isContentEditable)
-    ) {
+  openExportModal(): void {
+    if (!this.docName()) {
+      this.toasts.warning('Please open a PDF document first.');
       return;
     }
-    const key = event.key;
-    if (key === 'Delete' || key === 'Backspace') {
-      const id = this.state.selectedId();
-      if (id) {
-        event.preventDefault();
-        this.state.removeAnnotation(id);
-        return;
-      }
-      if (this.pagesStore.selectedCount() > 0) {
-        event.preventDefault();
-        this.pagesStore.deleteSelected();
-        return;
-      }
-    }
-    const mod = event.ctrlKey || event.metaKey;
-    if (!mod) {
-      return;
-    }
-    const lower = key.toLowerCase();
-    if (lower === 'z') {
-      event.preventDefault();
-      if (event.shiftKey) {
-        this.redo();
-      } else {
-        this.undo();
-      }
-    } else if (lower === 'y') {
-      event.preventDefault();
-      this.redo();
-    }
+    this.isExportModalOpen.set(true);
   }
 
-  async exportPdf(): Promise<void> {
+  closeExportModal(): void {
+    if (this.exporting()) return;
+    this.isExportModalOpen.set(false);
+    this.exportProgress.set(null);
+  }
+
+  async confirmExportModal(options: DetailedExportOptions): Promise<boolean> {
     const file = this.files.currentFiles()[0];
     if (!file) {
       this.toasts.error('No document is loaded.');
-      return;
+      return false;
     }
     this.exporting.set(true);
+    this.state.setIsExporting(true);
     try {
-      const display = this.displaySize();
-      const scale = display?.scale ?? 1;
-      const pages = this.pagesStore.pages().map((p) => {
-        const base = this.baseSizes().get(p.sourceIndex);
+      const allPages = this.pagesStore.pages();
+      let targetPages = allPages;
+
+      if (options.pageRange === 'current') {
+        const curId = this.pagesStore.currentId();
+        const cur = allPages.find((p) => p.id === curId) || allPages[0];
+        targetPages = cur ? [cur] : allPages;
+      } else if (options.pageRange === 'selected') {
+        const selIds = this.pagesStore.selected();
+        if (selIds.size > 0) {
+          targetPages = allPages.filter((p) => selIds.has(p.id));
+        }
+      }
+
+      const pageSpecs = targetPages.map((p) => {
+        const dispSize = this.getPageDisplaySize(p);
+        const anns = this.state.annotationsFor(p.id);
         return {
           sourceIndex: p.sourceIndex,
           rotation: p.rotation,
-          width: base?.width ?? 0,
-          height: base?.height ?? 0,
-          scale,
-          annotations: this.state.annotationsFor(p.id),
+          annotations: anns,
+          baseWidth: dispSize.width,
+          baseHeight: dispSize.height,
         };
       });
-      const textEdits = await this.buildTextEdits();
-      let bytes = await this.exporter.exportDocument(
-        new Uint8Array(file.data.slice(0)),
-        pages,
-        { title: file.name.replace(/\.pdf$/i, ''), textEdits },
-      );
-      const digital = this.state.digitalSignature();
-      if (digital) {
-        bytes = await this.signer.sign(bytes, digital);
+
+      // ── Step A: Apply text content edits (if any) ──────────────────────────
+      // This mutates the PDF content streams for any text runs the user edited
+      // via the content-edit tool. The result is a new ArrayBuffer; the original
+      // file.data is not mutated.
+      let sourceDataForExport: ArrayBuffer = file.data;
+      if (this.textEdit.hasPendingEdits()) {
+        this.exportProgress.set({ stage: 'Applying text edits…', percentage: 5, currentStep: 1, totalSteps: 10 });
+        try {
+          sourceDataForExport = await this.contentEditExport.exportDocument(file.data);
+        } catch (textEditErr) {
+          // Surface the error immediately; do not proceed with annotation export.
+          throw textEditErr;
+        }
       }
-      const base = file.name.replace(/\.pdf$/i, '');
+
+      // ── Step B: Annotation + page layout export (existing pipeline) ─────────
+      const bytes = await this.exporter.exportDocument(
+        new Uint8Array(sourceDataForExport.slice(0)),
+        pageSpecs,
+        options,
+        (progress) => {
+          this.exportProgress.set(progress);
+        },
+      );
+
+      const editorState = this.getStoredEditorState();
+      const buffer = bytes.slice().buffer;
+      await this.recentFiles.addOrUpdate(
+        file.name,
+        buffer,
+        bytes.byteLength,
+        pageSpecs.length,
+        editorState,
+      );
+      const autoSaveEnabled =
+        typeof localStorage !== 'undefined'
+          ? localStorage.getItem('ipdfeditor.auto-save') !== 'false'
+          : true;
+      if (autoSaveEnabled) {
+        await this.storage.saveDocument(file.name, buffer, editorState);
+      }
+
+      const downloadFilename = sanitizePdfFilename(options.filename);
       this.downloads.download(
-        new Blob([bytes], { type: 'application/pdf' }),
-        `${base}-edited.pdf`,
+        new Blob([bytes.slice()], { type: 'application/pdf' }),
+        downloadFilename,
       );
-      this.toasts.success(
-        digital ? 'Exported and cryptographically signed the PDF.' : 'Exported the edited PDF.',
-      );
+      this.toasts.success(`Exported "${downloadFilename}" successfully!`);
+      this.state.markSaved();
+      this.closeExportModal();
+      return true;
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Could not export the document.';
       this.toasts.error(message);
+      return false;
     } finally {
       this.exporting.set(false);
+      this.state.setIsExporting(false);
+      this.exportProgress.set(null);
     }
   }
 
-  private async buildTextEdits(): Promise<ExportTextEdit[]> {
-    const overrides = this.state.getTextOverrides();
-    const edits: ExportTextEdit[] = [];
-    for (const [pageIndex, pageMap] of overrides) {
-      let raw: Awaited<ReturnType<PdfViewerService['getPageRawTextItems']>>;
-      try {
-        raw = await this.viewer.getPageRawTextItems(pageIndex);
-      } catch {
-        continue;
-      }
-      const rawById = new Map(raw.map((r) => [r.id, r]));
-      for (const [id, str] of pageMap) {
-        const item = rawById.get(id);
-        if (!item || str === item.str) {
-          continue;
-        }
-        edits.push({
-          pageIndex,
-          box: item.pdfRect,
-          baseline: item.baseline,
-          fontSize: item.fontSize,
-          text: str,
-          removed: str === '',
-        });
-      }
-    }
-    return edits;
-  }
-
-  /* Drag and drop reordering */
-  onDragStart(id: string): void {
-    this.dragId = id;
-  }
-
-  onDragOver(event: DragEvent): void {
-    event.preventDefault();
-  }
-
-  onDrop(id: string): void {
-    if (this.dragId && this.dragId !== id) {
-      const targetIndex = this.pagesStore
-        .pages()
-        .findIndex((p) => p.id === id);
-      if (targetIndex >= 0) {
-        this.pagesStore.move(this.dragId, targetIndex);
-      }
-    }
-    this.dragId = null;
+  async exportPdf(): Promise<boolean> {
+    this.openExportModal();
+    return true;
   }
 
   /* Zoom */
   zoomIn(): void {
-    this.state.zoomIn();
+    this.zoomBy(1.1);
   }
 
   zoomOut(): void {
-    this.state.zoomOut();
+    this.zoomBy(1 / 1.1);
+  }
+
+  private zoomBy(factor: number, clientX?: number, clientY?: number): void {
+    const stage = this.stageRef()?.nativeElement;
+    const current = this.displaySize()?.scale ?? this.state.zoom();
+    const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+    const minZoom = isMobile ? 0.4 : 0.25;
+    const maxZoom = isMobile ? 3.5 : 5.0;
+    const next = Math.min(maxZoom, Math.max(minZoom, current * factor));
+    if (!stage) {
+      this.state.setZoom(next);
+      return;
+    }
+
+    const stageRect = stage.getBoundingClientRect();
+    const focalScreenX =
+      typeof clientX === 'number'
+        ? clientX
+        : stageRect.left + stageRect.width / 2;
+    const focalScreenY =
+      typeof clientY === 'number'
+        ? clientY
+        : stageRect.top + stageRect.height / 2;
+
+    // Find the page under focal point or current active page
+    let targetWrapper = document
+      .elementFromPoint(focalScreenX, focalScreenY)
+      ?.closest('.editor__page-wrapper') as HTMLElement | null;
+
+    if (!targetWrapper) {
+      const activeId = this.pagesStore.currentId();
+      targetWrapper = activeId
+        ? stage.querySelector<HTMLElement>(`#page-wrapper-${activeId}`)
+        : stage.querySelector<HTMLElement>('.editor__page-wrapper');
+    }
+
+    const targetPageId =
+      targetWrapper?.getAttribute('data-page-id') ||
+      this.pagesStore.currentId() ||
+      '';
+    const pageFrame = targetWrapper?.querySelector<HTMLElement>(
+      '.editor__page-frame',
+    );
+    const frameRect = pageFrame
+      ? pageFrame.getBoundingClientRect()
+      : stageRect;
+
+    const focalPageX = (focalScreenX - frameRect.left) / current;
+    const focalPageY = (focalScreenY - frameRect.top) / current;
+
+    this.isAutoScrolling = true;
+    this.state.setZoom(next);
+    if (targetPageId) {
+      this.pagesStore.setCurrent(targetPageId);
+    }
+
+    requestAnimationFrame(() => {
+      const updatedWrapper = targetPageId
+        ? stage.querySelector<HTMLElement>(`#page-wrapper-${targetPageId}`)
+        : null;
+      if (updatedWrapper) {
+        const frame = updatedWrapper.querySelector<HTMLElement>(
+          '.editor__page-frame',
+        );
+        const fRect = frame
+          ? frame.getBoundingClientRect()
+          : updatedWrapper.getBoundingClientRect();
+
+        const currentFocalScreenX = fRect.left + focalPageX * next;
+        const currentFocalScreenY = fRect.top + focalPageY * next;
+
+        const deltaX = currentFocalScreenX - focalScreenX;
+        const deltaY = currentFocalScreenY - focalScreenY;
+
+        stage.scrollLeft = Math.max(0, Math.round(stage.scrollLeft + deltaX));
+        stage.scrollTop = Math.max(0, Math.round(stage.scrollTop + deltaY));
+      }
+
+      setTimeout(() => {
+        this.isAutoScrolling = false;
+        if (targetPageId) {
+          this.pagesStore.setCurrent(targetPageId);
+        }
+      }, 60);
+    });
+  }
+
+  /** Ctrl/Cmd + wheel also receives trackpad pinch gestures in modern browsers. */
+  onWorkspaceWheel(event: WheelEvent): void {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const factor = Math.min(
+      1.2,
+      Math.max(0.8, Math.exp(-event.deltaY * 0.001)),
+    );
+    this.zoomBy(factor, event.clientX, event.clientY);
   }
 
   setFit(mode: 'width' | 'page'): void {
     this.state.setFit(mode);
   }
 
+  toggleFit(): void {
+    const current = this.state.fitMode();
+    const next = current === 'width' ? 'page' : 'width';
+    this.state.setFit(next);
+  }
+
   resetZoom(): void {
     this.state.resetZoom();
   }
 
+  readonly isPanning = signal(false);
+  readonly isSpacePanning = signal(false);
+  private panStart: { x: number; y: number; scrollLeft: number; scrollTop: number } | null = null;
+
+  onStagePointerDown(event: PointerEvent): void {
+    if (event.pointerType === 'touch') {
+      return;
+    }
+    const isHand =
+      this.state.tool() === 'hand' ||
+      this.isSpacePanning() ||
+      event.button === 1;
+    if (!isHand) {
+      return;
+    }
+    const stage = this.stageRef()?.nativeElement;
+    if (!stage) {
+      return;
+    }
+    this.isPanning.set(true);
+    this.panStart = {
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: stage.scrollLeft,
+      scrollTop: stage.scrollTop,
+    };
+    stage.setPointerCapture?.(event.pointerId);
+  }
+
+  onStagePointerMove(event: PointerEvent): void {
+    if (!this.isPanning() || !this.panStart) {
+      return;
+    }
+    const stage = this.stageRef()?.nativeElement;
+    if (!stage) {
+      return;
+    }
+    const dx = event.clientX - this.panStart.x;
+    const dy = event.clientY - this.panStart.y;
+    stage.scrollLeft = this.panStart.scrollLeft - dx;
+    stage.scrollTop = this.panStart.scrollTop - dy;
+  }
+
+  private isAutoScrolling = false;
+  private scrollRafId: number | null = null;
+
+  onStageScroll(event: Event): void {
+    if (this.isAutoScrolling) {
+      return;
+    }
+
+    if (this.scrollRafId === null) {
+      this.scrollRafId = requestAnimationFrame(() => {
+        this.scrollRafId = null;
+        this.detectActivePageInViewport();
+      });
+    }
+  }
+
+  private detectActivePageInViewport(): void {
+    const stage = this.stageRef()?.nativeElement;
+    if (!stage || this.isAutoScrolling) {
+      return;
+    }
+
+    const stageRect = stage.getBoundingClientRect();
+    const centerX = stageRect.left + stageRect.width / 2;
+    const centerY = stageRect.top + stageRect.height / 2;
+
+    const el = document.elementFromPoint(centerX, centerY);
+    const wrapper = el?.closest('.editor__page-wrapper') as HTMLElement | null;
+
+    if (wrapper) {
+      const pageId = wrapper.getAttribute('data-page-id');
+      if (pageId && pageId !== this.pagesStore.currentId()) {
+        this.pagesStore.setCurrent(pageId);
+      }
+    }
+  }
+
+  onPagePointerDown(pageId: string): void {
+    if (this.pagesStore.currentId() !== pageId) {
+      this.pagesStore.setCurrent(pageId);
+    }
+  }
+
+  onStagePointerUp(event: PointerEvent): void {
+    if (this.isPanning()) {
+      this.isPanning.set(false);
+      this.panStart = null;
+      const stage = this.stageRef()?.nativeElement;
+      stage?.releasePointerCapture?.(event.pointerId);
+    }
+    if (this.state.modified()) {
+      void this.autoSaveSilently();
+    }
+  }
+
+  onStagePointerLeave(_event: PointerEvent): void {
+    if (this.state.modified()) {
+      void this.autoSaveSilently();
+    }
+  }
+
+  @HostListener('window:pointerup')
+  @HostListener('window:touchend')
+  onWindowPointerEnd(): void {
+    if (this.state.modified()) {
+      void this.autoSaveSilently();
+    }
+  }
+
+  @HostListener('window:blur')
+  onWindowBlur(): void {
+    if (this.state.modified()) {
+      void this.autoSaveSilently();
+    }
+  }
+
+  @HostListener('window:keydown', ['$event'])
+  onKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      if (this.state.pendingPlacement()) {
+        this.cancelPendingPlacement();
+        return;
+      }
+      if (this.isFullscreen()) {
+        void document.exitFullscreen();
+        return;
+      }
+    }
+
+    const target = event.target as HTMLElement | null;
+    const isInput =
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable);
+
+    if (event.code === 'Space' && !isInput && !this.isSpacePanning()) {
+      event.preventDefault();
+      this.isSpacePanning.set(true);
+      return;
+    }
+
+    const hasZoomModifier = event.ctrlKey || event.metaKey;
+
+    // Ctrl/Cmd+O — Open new file
+    if (hasZoomModifier && event.key.toLowerCase() === 'o') {
+      event.preventDefault();
+      void this.openNewFile();
+      return;
+    }
+
+    // Ctrl/Cmd+S — Save current document progress locally
+    if (hasZoomModifier && event.key.toLowerCase() === 's' && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (this.docName()) {
+        void this.onManualSaveClick();
+      }
+      return;
+    }
+
+    const isZoomIn = event.key === '+' || event.key === '=' || event.code === 'NumpadAdd';
+    const isZoomOut = event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract';
+    if (hasZoomModifier && (isZoomIn || isZoomOut)) {
+      event.preventDefault();
+      this.zoomBy(isZoomIn ? 1.1 : 1 / 1.1);
+      return;
+    }
+
+    if (isInput) {
+      return;
+    }
+
+    // Undo / Redo keyboard shortcuts
+    const isUndo = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey;
+    const isRedo = (event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey));
+    if (isUndo) {
+      event.preventDefault();
+      // Content-edit mode: route to text-edit history.
+      if (this.state.tool() === 'content-edit') {
+        this.textEdit.undo();
+        return;
+      }
+      const res = this.state.undo();
+      if (res.success && res.description) {
+        this.toasts.info(`Undone: ${res.description}`);
+      }
+      return;
+    }
+    if (isRedo) {
+      event.preventDefault();
+      // Content-edit mode: route to text-edit history.
+      if (this.state.tool() === 'content-edit') {
+        this.textEdit.redo();
+        return;
+      }
+      const res = this.state.redo();
+      if (res.success && res.description) {
+        this.toasts.info(`Redone: ${res.description}`);
+      }
+      return;
+    }
+
+    const hasModifier = event.ctrlKey || event.metaKey;
+    const selectedIds = this.state.selectedIds();
+
+    if (!hasModifier && !isInput && selectedIds.length === 0) {
+      const k = event.key.toLowerCase();
+      if (k === 'v') { this.selectTool('select'); return; }
+      if (k === 'h') { this.selectTool('hand'); return; }
+      if (k === 't') { this.selectTool('text'); return; }
+      if (k === 'p') { this.selectTool('pen'); return; }
+      if (k === 'e' && !event.shiftKey) { this.selectTool('eraser'); return; }
+      if (k === 'e' && event.shiftKey) {
+        // Shift+E toggles PDF text edit mode on/off.
+        this.selectTool(this.state.tool() === 'content-edit' ? 'select' : 'content-edit');
+        return;
+      }
+      if (k === 's') { this.onShapeToolClick(); return; }
+      if (k === 'i') { this.onIconToolClick(); return; }
+    }
+
+    if (selectedIds.length === 0) {
+      return;
+    }
+
+    if (hasModifier && event.key.toLowerCase() === 'g') {
+      event.preventDefault();
+      const pageId = this.currentPageId();
+      if (event.shiftKey) {
+        this.state.ungroupSelected(pageId);
+      } else if (event.altKey) {
+        this.state.regroupSelected(pageId);
+      } else {
+        this.state.groupSelected(pageId);
+      }
+      return;
+    }
+
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      event.preventDefault();
+      this.state.deleteSelected(this.currentPageId());
+      return;
+    }
+
+    if (
+      event.key === 'ArrowLeft' ||
+      event.key === 'ArrowRight' ||
+      event.key === 'ArrowUp' ||
+      event.key === 'ArrowDown'
+    ) {
+      event.preventDefault();
+      const step = event.shiftKey ? 10 : 1;
+      let dx = 0;
+      let dy = 0;
+      if (event.key === 'ArrowLeft') dx = -step;
+      if (event.key === 'ArrowRight') dx = step;
+      if (event.key === 'ArrowUp') dy = -step;
+      if (event.key === 'ArrowDown') dy = step;
+      for (const id of selectedIds) {
+        this.state.nudgeAnnotation(id, dx, dy);
+      }
+    }
+  }
+
+  @HostListener('window:keyup', ['$event'])
+  onKeyup(event: KeyboardEvent): void {
+    if (event.code === 'Space') {
+      this.isSpacePanning.set(false);
+      if (this.isPanning()) {
+        this.isPanning.set(false);
+        this.panStart = null;
+      }
+    }
+  }
+
   /* Search */
+  private offscreenMeasureCtx: CanvasRenderingContext2D | null = null;
+
+  private getMeasureContext(): CanvasRenderingContext2D | null {
+    if (!this.offscreenMeasureCtx && typeof document !== 'undefined') {
+      const c = document.createElement('canvas');
+      this.offscreenMeasureCtx = c.getContext('2d');
+    }
+    return this.offscreenMeasureCtx;
+  }
+
   onSearch(value: string): void {
     this.searchQuery.set(value);
     clearTimeout(this.searchTimer);
     this.searchTimer = setTimeout(() => void this.runSearch(value), 300);
+  }
+
+  onSearchKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (event.shiftKey) {
+        this.searchPrev();
+      } else {
+        this.searchNext();
+      }
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      this.clearSearch();
+    }
   }
 
   private async runSearch(query: string): Promise<void> {
@@ -604,54 +3296,166 @@ export class EditorComponent {
       this.clearSearch();
       return;
     }
+
     const pages = this.pagesStore.pages();
-    const hits: number[] = [];
-    let total = 0;
-    for (let i = 0; i < pages.length; i++) {
-      const text = (await this.viewer.getPageText(pages[i].sourceIndex)).toLowerCase();
-      let found = 0;
-      let pos = text.indexOf(q);
-      while (pos !== -1) {
-        found++;
-        pos = text.indexOf(q, pos + q.length);
+    const allMatches: SearchMatch[] = [];
+    const hitPageIndices: number[] = [];
+    const ctx = this.getMeasureContext();
+
+    for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+      const page = pages[pIdx];
+      const pageId = page.id;
+      let pageHasHit = false;
+
+      // 1. Search PDF document embedded text
+      try {
+        const textData = await this.viewer.getPageTextData(page.sourceIndex, page.rotation || 0);
+        for (let sIdx = 0; sIdx < textData.spans.length; sIdx++) {
+          const span = textData.spans[sIdx];
+          const spanLower = span.str.toLowerCase();
+          let pos = spanLower.indexOf(q);
+          while (pos !== -1) {
+            const endPos = pos + q.length;
+            const normRect = calcMatchNormRect(
+              span,
+              pos,
+              endPos,
+              textData.viewport,
+              ctx,
+            );
+            allMatches.push({
+              id: `sm-${pageId}-span-${sIdx}-${pos}`,
+              pageIndex: page.sourceIndex,
+              pageId: page.id,
+              normRect,
+              text: span.str.slice(pos, endPos),
+            });
+            pageHasHit = true;
+            pos = spanLower.indexOf(q, endPos);
+          }
+        }
+      } catch {
+        /* skip unreadable page */
       }
-      if (found > 0) {
-        hits.push(i);
-        total += found;
+
+      // 2. Search user-added overlay text annotations on this page
+      const annotations = this.state.annotationsFor(pageId);
+      const dispSize = this.getPageDisplaySize(page);
+      for (const ann of annotations) {
+        if (ann.type === 'text' && ann.text) {
+          const textAnn = ann as TextAnnotation;
+          const textLower = textAnn.text.toLowerCase();
+          let pos = textLower.indexOf(q);
+          const totalW = textAnn.rect.width;
+          const totalH = textAnn.rect.height;
+          const strLen = textAnn.text.length;
+
+          while (pos !== -1 && strLen > 0) {
+            const endPos = pos + q.length;
+            let startFrac = pos / strLen;
+            let endFrac = endPos / strLen;
+            if (ctx) {
+              ctx.font = `${textAnn.fontSize}px ${textAnn.fontFamily || 'sans-serif'}`;
+              const fullMeas = ctx.measureText(textAnn.text).width;
+              if (fullMeas > 0) {
+                startFrac = ctx.measureText(textAnn.text.slice(0, pos)).width / fullMeas;
+                endFrac = ctx.measureText(textAnn.text.slice(0, endPos)).width / fullMeas;
+              }
+            }
+            const matchPixelX = textAnn.rect.x + startFrac * totalW;
+            const matchPixelW = (endFrac - startFrac) * totalW;
+            const matchPixelY = textAnn.rect.y;
+            const matchPixelH = totalH;
+
+            allMatches.push({
+              id: `sm-${pageId}-ann-${ann.id}-${pos}`,
+              pageIndex: page.sourceIndex,
+              pageId: page.id,
+              normRect: {
+                x: Math.max(0, matchPixelX / (dispSize.width || 1)),
+                y: Math.max(0, matchPixelY / (dispSize.height || 1)),
+                width: Math.max(0.002, matchPixelW / (dispSize.width || 1)),
+                height: Math.max(0.005, matchPixelH / (dispSize.height || 1)),
+              },
+              text: textAnn.text.slice(pos, endPos),
+            });
+            pageHasHit = true;
+            pos = textLower.indexOf(q, endPos);
+          }
+        }
+      }
+
+      if (pageHasHit) {
+        hitPageIndices.push(pIdx);
       }
     }
-    this.searchHits.set(hits);
-    this.searchTotal.set(total);
-    this.searchHitIndex.set(hits.length ? 0 : -1);
-    if (hits.length) {
-      this.pagesStore.setCurrent(pages[hits[0]].id);
+
+    this.searchMatches.set(allMatches);
+    this.searchHits.set(hitPageIndices);
+
+    if (allMatches.length > 0) {
+      this.currentMatchIndex.set(0);
+      const first = allMatches[0];
+      this.pagesStore.setCurrent(first.pageId);
+      this.scrollToMatch(first);
+    } else {
+      this.currentMatchIndex.set(-1);
     }
   }
 
   searchNext(): void {
-    const hits = this.searchHits();
-    if (!hits.length) {
+    const list = this.searchMatches();
+    if (!list.length) {
       return;
     }
-    const idx = (this.searchHitIndex() + 1) % hits.length;
-    this.searchHitIndex.set(idx);
-    this.pagesStore.setCurrent(this.pagesStore.pages()[hits[idx]].id);
+    const nextIdx = (this.currentMatchIndex() + 1) % list.length;
+    this.currentMatchIndex.set(nextIdx);
+    const target = list[nextIdx];
+    this.pagesStore.setCurrent(target.pageId);
+    this.scrollToMatch(target);
   }
 
   searchPrev(): void {
-    const hits = this.searchHits();
-    if (!hits.length) {
+    const list = this.searchMatches();
+    if (!list.length) {
       return;
     }
-    const idx = (this.searchHitIndex() - 1 + hits.length) % hits.length;
-    this.searchHitIndex.set(idx);
-    this.pagesStore.setCurrent(this.pagesStore.pages()[hits[idx]].id);
+    const prevIdx = (this.currentMatchIndex() - 1 + list.length) % list.length;
+    this.currentMatchIndex.set(prevIdx);
+    const target = list[prevIdx];
+    this.pagesStore.setCurrent(target.pageId);
+    this.scrollToMatch(target);
   }
 
   clearSearch(): void {
     this.searchQuery.set('');
+    this.searchMatches.set([]);
     this.searchHits.set([]);
-    this.searchTotal.set(0);
-    this.searchHitIndex.set(-1);
+    this.currentMatchIndex.set(-1);
+  }
+
+  scrollToMatch(match: SearchMatch): void {
+    const stage = this.stageRef()?.nativeElement;
+    const pageEl = document.getElementById(`page-wrapper-${match.pageId}`);
+    if (!stage || !pageEl) {
+      return;
+    }
+    const page = this.pagesStore.pages().find((p) => p.id === match.pageId);
+    if (!page) {
+      return;
+    }
+    const dispSize = this.getPageDisplaySize(page);
+    const matchPixelY = pageEl.offsetTop + match.normRect.y * dispSize.height;
+    const matchH = match.normRect.height * dispSize.height;
+    const targetScrollTop = matchPixelY - stage.clientHeight / 2 + matchH / 2;
+
+    this.isAutoScrolling = true;
+    stage.scrollTo({
+      top: Math.max(0, targetScrollTop),
+      behavior: 'smooth',
+    });
+    setTimeout(() => {
+      this.isAutoScrolling = false;
+    }, 400);
   }
 }

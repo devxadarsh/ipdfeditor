@@ -1,57 +1,325 @@
-<section class="tool-page">
+<section class="tool-page tool-page--merge">
   <div class="pf-container">
-    <header class="tool-page__header">
-      <a class="tool-page__back" routerLink="/tools"><i class="fa-solid fa-arrow-left"></i> Tools</a>
-      <h1><i class="fa-solid fa-object-group tool-page__icon"></i> Merge PDF</h1>
-      <p class="pf-text-muted">
-        Combine multiple PDFs into a single document — entirely on your device.
+    <app-breadcrumbs [items]="seoConfig.breadcrumbs"></app-breadcrumbs>
+
+    <!-- Symmetric Tool Header -->
+    <header class="tool-header">
+      <div class="tool-header__title-row">
+        <h1 class="tool-header__title">Merge PDF Files</h1>
+        <span class="tool-cat-pill tool-cat-pill--organize">
+          <i class="fa-solid fa-object-group"></i>
+          <span>Organize Suite</span>
+        </span>
+      </div>
+      <p class="tool-header__subtitle">
+        Combine multiple PDF documents into a single ordered file. Reorder pages and files with drag-and-drop.
       </p>
     </header>
 
     <div class="tool-page__body">
-      <app-file-dropzone
-        [multiple]="true"
-        label="Add PDFs to merge"
-        (filesLoaded)="addFiles($event)"
-      />
+      <!-- Symmetric Selection Landing Card (When no files are loaded) -->
+      @if (items().length === 0) {
+        <div class="pf-landing">
+          <div class="pf-landing-card">
+            <div class="pf-landing-badge pf-landing-badge--organize">
+              <i class="fa-solid fa-object-group"></i>
+            </div>
+            <h2 class="pf-landing-title">Merge Multiple PDF Files</h2>
+            <p class="pf-landing-subtitle">
+              Select or drop 2 or more PDF documents. You can easily reorder and arrange them before generating your unified file.
+            </p>
 
-      @if (items().length > 0) {
-        <ul class="merge-list">
-          @for (item of items(); track item.id; let i = $index) {
-            <li class="merge-list__item pf-card">
-              <span class="merge-list__index">{{ i + 1 }}</span>
-              <i class="fa-solid fa-file-pdf merge-list__file"></i>
-              <div class="merge-list__meta">
-                <span class="merge-list__name">{{ item.name }}</span>
-                <span class="merge-list__size pf-text-muted">{{ formatBytes(item.sizeBytes) }}</span>
-              </div>
-              <div class="merge-list__actions">
-                <button type="button" class="icon-btn" (click)="moveUp(i)" [disabled]="i === 0" aria-label="Move up">
-                  <i class="fa-solid fa-arrow-up"></i>
-                </button>
-                <button type="button" class="icon-btn" (click)="moveDown(i)" [disabled]="i === items().length - 1" aria-label="Move down">
-                  <i class="fa-solid fa-arrow-down"></i>
-                </button>
-                <button type="button" class="icon-btn icon-btn--danger" (click)="remove(item.id)" aria-label="Remove">
-                  <i class="fa-solid fa-trash"></i>
-                </button>
-              </div>
-            </li>
-          }
-        </ul>
+            <div class="pf-landing-dropzone">
+              <app-file-dropzone
+                [multiple]="true"
+                label="Choose or Drop PDF Files to Merge"
+                (filesLoaded)="addFiles($event)"
+              />
+            </div>
 
-        <div class="tool-page__footer">
-          <button class="pf-btn pf-btn--primary" type="button" disabled title="Merge pipeline arrives in the next milestone">
-            <i class="fa-solid fa-object-group"></i> Merge {{ items().length }} files
-          </button>
+            <div class="pf-landing-privacy">
+              <i class="fa-solid fa-shield-halved"></i>
+              <span><strong>100% Private Sandbox</strong> · Files never leave your local device.</span>
+            </div>
+
+            <div class="pf-landing-features">
+              <span class="pf-feat-pill"><i class="fa-solid fa-layer-group"></i> Batch Selection</span>
+              <span class="pf-feat-pill"><i class="fa-solid fa-arrows-up-down"></i> Drag &amp; Drop Order</span>
+              <span class="pf-feat-pill"><i class="fa-solid fa-file-lines"></i> Page Counts</span>
+              <span class="pf-feat-pill"><i class="fa-solid fa-pen-to-square"></i> Open in Editor</span>
+            </div>
+          </div>
+        </div>
+      } @else if (mergedResult()) {
+        <!-- Post-Merge Success Completion Card -->
+        <div class="merge-success-card pf-card">
+          <div class="merge-success-icon">
+            <i class="fa-solid fa-circle-check"></i>
+          </div>
+          <h2 class="merge-success-title">PDFs Merged Successfully!</h2>
+          <p class="merge-success-subtitle">
+            Your {{ items().length }} documents have been unified into <strong>{{ mergedResult()!.filename }}</strong> ({{ mergedResult()!.pageCount }} pages · {{ formatBytes(mergedResult()!.sizeBytes) }}).
+          </p>
+
+          <div class="merge-success-actions">
+            <button
+              type="button"
+              class="pf-btn pf-btn--primary pf-btn--xl"
+              (click)="downloadResult()"
+            >
+              <i class="fa-solid fa-download"></i>
+              <span>Download Merged PDF</span>
+            </button>
+
+            <button
+              type="button"
+              class="pf-btn pf-btn--secondary pf-btn--xl"
+              (click)="openInEditor()"
+            >
+              <i class="fa-solid fa-pen-to-square"></i>
+              <span>Open in PDF Editor</span>
+            </button>
+          </div>
+
+          <div class="merge-success-footer">
+            <button type="button" class="pf-btn pf-btn--ghost" (click)="resetForAnother()">
+              <i class="fa-solid fa-sliders"></i>
+              <span>Adjust &amp; Re-merge</span>
+            </button>
+            <button type="button" class="pf-btn pf-btn--ghost" (click)="clearAll()">
+              <i class="fa-solid fa-plus"></i>
+              <span>Merge New Documents</span>
+            </button>
+          </div>
         </div>
       } @else {
-        <p class="tool-page__empty pf-text-muted">No files added yet.</p>
+        <!-- Loaded Files Workspace -->
+        <div class="merge-workspace">
+          <!-- Control Bar -->
+          <div class="merge-workspace__bar">
+            <div class="merge-workspace__stats">
+              <strong>{{ items().length }} files selected</strong>
+              <span class="pf-badge pf-badge--pages">
+                <i class="fa-solid fa-file-lines"></i> {{ totalPageCount() }} pages total
+              </span>
+              <span class="pf-text-muted">· {{ formatBytes(totalBytes()) }}</span>
+            </div>
+            <div class="merge-workspace__actions">
+                <div class="merge-add-more">
+                <label class="merge-add-btn" title="Add more PDF files">
+                  <input
+                    type="file"
+                    class="merge-add-btn__input"
+                    multiple
+                    accept="application/pdf,.pdf"
+                    (change)="onAddMoreFiles($event)"
+                  />
+                  <span class="merge-add-btn__icon"><i class="fa-solid fa-plus"></i></span>
+                  <span class="merge-add-btn__label">Add more PDFs</span>
+                </label>
+              </div>
+              <button type="button" class="pf-btn pf-btn--ghost" (click)="clearAll()">
+                <i class="fa-solid fa-trash"></i>
+                <span>Clear All</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Quick Sorting Toolbar -->
+          <div class="merge-quick-tools">
+            <span class="merge-quick-tools__label">Reorder:</span>
+            <button type="button" class="pf-chip" (click)="sortByName(true)" title="Sort Alphabetically A to Z">
+              <i class="fa-solid fa-arrow-down-a-z"></i> A to Z
+            </button>
+            <button type="button" class="pf-chip" (click)="sortByName(false)" title="Sort Alphabetically Z to A">
+              <i class="fa-solid fa-arrow-up-z-a"></i> Z to A
+            </button>
+            <button type="button" class="pf-chip" (click)="reverseOrder()" title="Reverse Current Sequence">
+              <i class="fa-solid fa-arrow-right-arrow-left"></i> Reverse
+            </button>
+          </div>
+
+          <!-- Reorderable List of Files -->
+          <ul
+            class="merge-list"
+            cdkDropList
+            [cdkDropListData]="items()"
+            (cdkDropListDropped)="onDrop($event)"
+          >
+            @for (item of items(); track item.id; let i = $index) {
+              <li class="merge-list__item pf-card" cdkDrag [cdkDragData]="item">
+                <div class="merge-list__drag-handle" cdkDragHandle title="Drag to reorder">
+                  <i class="fa-solid fa-grip-vertical"></i>
+                </div>
+                <span class="merge-list__index">{{ i + 1 }}</span>
+                <i class="fa-solid fa-file-pdf merge-list__file-icon"></i>
+                <div class="merge-list__meta">
+                  <span class="merge-list__name" [title]="item.name">{{ item.name }}</span>
+                  <div class="merge-list__sub">
+                    <span class="merge-list__page-tag">
+                      <i class="fa-regular fa-file-lines"></i>
+                      {{ item.pageCount }} {{ item.pageCount === 1 ? 'page' : 'pages' }}
+                    </span>
+                    <span class="pf-text-muted">· {{ formatBytes(item.sizeBytes) }}</span>
+                  </div>
+                </div>
+                <div class="merge-list__actions">
+                  <button
+                    type="button"
+                    class="pf-btn pf-btn--ghost pf-btn--sm merge-preview-btn"
+                    (click)="openPreview(item)"
+                    title="View and scroll pages of this PDF"
+                    aria-label="Preview pages"
+                  >
+                    <i class="fa-solid fa-eye"></i>
+                    <span>Preview Pages</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="icon-btn"
+                    (click)="moveUp(i)"
+                    [disabled]="i === 0"
+                    title="Move up"
+                    aria-label="Move up"
+                  >
+                    <i class="fa-solid fa-arrow-up"></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="icon-btn"
+                    (click)="moveDown(i)"
+                    [disabled]="i === items().length - 1"
+                    title="Move down"
+                    aria-label="Move down"
+                  >
+                    <i class="fa-solid fa-arrow-down"></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="icon-btn icon-btn--danger"
+                    (click)="remove(item.id)"
+                    title="Remove file"
+                    aria-label="Remove"
+                  >
+                    <i class="fa-solid fa-xmark"></i>
+                  </button>
+                </div>
+              </li>
+            }
+          </ul>
+
+          <!-- Output Settings -->
+          <div class="merge-output-config">
+            <label class="merge-output-config__label" for="mergeOutputName">
+              <i class="fa-solid fa-file-signature"></i>
+              <span>Output File Name:</span>
+            </label>
+            <input
+              id="mergeOutputName"
+              type="text"
+              class="pf-input merge-output-config__input"
+              [value]="outputFilename()"
+              (input)="outputFilename.set($any($event.target).value)"
+              placeholder="e.g. combined-document.pdf"
+            />
+          </div>
+
+          <!-- Action Footer -->
+          <div class="tool-action-bar">
+            <button
+              class="pf-btn pf-btn--primary pf-btn--xl w-100"
+              type="button"
+              [disabled]="items().length < 2 || merging()"
+              (click)="merge()"
+            >
+              @if (merging()) {
+                <i class="fa-solid fa-spinner fa-spin"></i>
+                <span>Merging {{ items().length }} Files ({{ totalPageCount() }} Pages)…</span>
+              } @else {
+                <i class="fa-solid fa-object-group"></i>
+                <span>Merge {{ items().length }} Files ({{ totalPageCount() }} Pages)</span>
+              }
+            </button>
+            @if (items().length < 2) {
+              <p class="tool-action-bar__hint pf-text-muted">
+                <i class="fa-solid fa-circle-info"></i> Please add at least 2 PDF files to merge.
+              </p>
+            }
+          </div>
+        </div>
       }
     </div>
 
-    <p class="tool-page__privacy">
-      <i class="fa-solid fa-lock"></i> Files never leave your device.
-    </p>
+    <!-- Real Live PDF Page Preview Modal -->
+    @if (previewItem(); as item) {
+      @if (previewBlobUrl(); as blobUrl) {
+        <div class="pf-modal-backdrop" (click)="closePreview()">
+          <div class="pf-modal pf-modal--pdf-preview pf-card" (click)="$event.stopPropagation()">
+            <div class="pf-modal__header">
+              <div class="pf-modal__title-wrap">
+                <i class="fa-solid fa-file-pdf pf-modal__icon"></i>
+                <div>
+                  <h3 class="pf-modal__title">{{ item.name }}</h3>
+                  <div class="pf-modal__subtitle pf-text-muted">
+                    <span>{{ item.pageCount }} {{ item.pageCount === 1 ? 'page' : 'pages' }}</span>
+                    <span>· {{ formatBytes(item.sizeBytes) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <button type="button" class="icon-btn" (click)="closePreview()" aria-label="Close preview">
+                <i class="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <div class="pf-modal__pdf-body">
+              <app-pdf-card-grid
+                [src]="blobUrl"
+                [initialPagesPerRow]="mergePagesPerRow()"
+                [maxHeight]="'66vh'"
+                [selectable]="false"
+              ></app-pdf-card-grid>
+            </div>
+
+            <div class="pf-modal__footer">
+              <span class="pf-modal__footer-hint pf-text-muted">
+                <i class="fa-solid fa-circle-info"></i> Browse all pages to verify content before merging.
+              </span>
+              <button type="button" class="pf-btn pf-btn--primary" (click)="closePreview()">
+                Done Previewing
+              </button>
+            </div>
+          </div>
+        </div>
+      }
+    }
+
+    <!-- Symmetric Bottom Trust Strip -->
+    <div class="tool-trust-strip">
+      <div class="tool-trust-item">
+        <i class="fa-solid fa-shield-halved"></i>
+        <div>
+          <strong>100% Client-Side</strong>
+          <span>Documents never uploaded to any server</span>
+        </div>
+      </div>
+      <div class="tool-trust-item">
+        <i class="fa-solid fa-bolt"></i>
+        <div>
+          <strong>Instant WASM Engine</strong>
+          <span>High-speed multi-threaded document merger</span>
+        </div>
+      </div>
+      <div class="tool-trust-item">
+        <i class="fa-solid fa-infinity"></i>
+        <div>
+          <strong>No Limits or Watermarks</strong>
+          <span>Merge as many files and pages as needed</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comprehensive On-Page SEO Section -->
+    <app-tool-seo-content [config]="seoConfig"></app-tool-seo-content>
   </div>
 </section>

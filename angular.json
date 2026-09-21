@@ -3,7 +3,7 @@
   "version": 1,
   "newProjectRoot": "projects",
   "projects": {
-    "PDFForge": {
+    "ipdfeditor": {
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
@@ -17,14 +17,23 @@
         "build": {
           "builder": "@angular-devkit/build-angular:application",
           "options": {
-            "outputPath": "dist/pdfforge",
+            "outputPath": "dist/ipdfeditor",
             "index": "src/index.html",
             "browser": "src/main.ts",
             "polyfills": [
               "zone.js"
             ],
             "allowedCommonJsDependencies": [
-              "pako"
+              "pako",
+              "@neslinesli93/qpdf-wasm",
+              "tesseract.js",
+              "mupdf"
+            ],
+            "externalDependencies": [
+              "fs",
+              "path",
+              "node:fs",
+              "module"
             ],
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
@@ -32,6 +41,21 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "node_modules/ngx-extended-pdf-viewer/assets",
+                "output": "assets"
+              },
+              {
+                "glob": "qpdf.wasm",
+                "input": "node_modules/@neslinesli93/qpdf-wasm/dist",
+                "output": "assets"
+              },
+              {
+                "glob": "mupdf-wasm.wasm",
+                "input": "node_modules/mupdf/dist",
+                "output": "assets"
               }
             ],
             "styles": [
@@ -41,6 +65,11 @@
           },
           "configurations": {
             "production": {
+              "optimization": {
+                "scripts": true,
+                "styles": true,
+                "fonts": false
+              },
               "budgets": [
                 {
                   "type": "initial",
@@ -49,8 +78,8 @@
                 },
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "8kb",
-                  "maximumError": "16kb"
+                  "maximumWarning": "40kb",
+                  "maximumError": "64kb"
                 }
               ],
               "outputHashing": "all"
@@ -67,10 +96,10 @@
           "builder": "@angular-devkit/build-angular:dev-server",
           "configurations": {
             "production": {
-              "buildTarget": "PDFForge:build:production"
+              "buildTarget": "ipdfeditor:build:production"
             },
             "development": {
-              "buildTarget": "PDFForge:build:development"
+              "buildTarget": "ipdfeditor:build:development"
             }
           },
           "defaultConfiguration": "development"
@@ -91,6 +120,21 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "node_modules/ngx-extended-pdf-viewer/assets",
+                "output": "assets"
+              },
+              {
+                "glob": "qpdf.wasm",
+                "input": "node_modules/@neslinesli93/qpdf-wasm/dist",
+                "output": "assets"
+              },
+              {
+                "glob": "mupdf-wasm.wasm",
+                "input": "node_modules/mupdf/dist",
+                "output": "assets"
               }
             ],
             "styles": [
@@ -104,5 +148,31 @@
   },
   "cli": {
     "analytics": false
+  },
+  "schematics": {
+    "@schematics/angular:component": {
+      "type": "component"
+    },
+    "@schematics/angular:directive": {
+      "type": "directive"
+    },
+    "@schematics/angular:service": {
+      "type": "service"
+    },
+    "@schematics/angular:guard": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:interceptor": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:module": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:pipe": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:resolver": {
+      "typeSeparator": "."
+    }
   }
 }

@@ -1,8 +1,10 @@
-/* PDFForge global styles */
+/* iPDFEditor global styles */
 @use 'styles/tokens';
-@use 'styles/modal';
 
 /* Third-party base styles */
+@import '@angular/material/prebuilt-themes/azure-blue.css';
+@import '@angular/cdk/overlay-prebuilt.css';
+@import '@angular/cdk/a11y-prebuilt.css';
 @import 'bootstrap/dist/css/bootstrap.min.css';
 @import '@fortawesome/fontawesome-free/css/all.min.css';
 
@@ -16,6 +18,26 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
+}
+
+app-root {
+  display: block;
+  height: 100%;
+}
+
+/* Mobile UI Bars: prevent zooming & unwanted gestures on chrome bars */
+header,
+nav,
+.editor__viewbar,
+.editor__mobile-option-bar,
+.editor__mobile-drawing-panel,
+.editor__toolbar,
+.editor__bottom-sheet,
+.editor-shell__header,
+.props__sheet {
+  touch-action: pan-x;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 body {
@@ -145,7 +167,53 @@ code,
 }
 
 .tool-page__body {
-  max-width: 720px;
+  width: 100%;
+  max-width: 1020px;
+  margin-inline: auto;
+}
+
+.tool-page--security {
+  .tool-page__body {
+    max-width: 100%;
+    width: 100%;
+    margin-inline: auto;
+  }
+}
+
+/* ---- Security Subnavigation Tabs ---- */
+.security-nav-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  margin: 0 auto 24px;
+}
+
+.sec-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--pf-radius-pill, 9999px);
+  background: var(--pf-surface-container-high, #e5e7eb);
+  color: var(--pf-on-surface-variant, #4b5563);
+  text-decoration: none;
+  font-size: 13.5px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: var(--pf-surface-container-highest, #d1d5db);
+    color: var(--pf-on-surface, #111827);
+    text-decoration: none;
+  }
+
+  &--active {
+    background: var(--pf-primary, #005fb8);
+    color: #ffffff !important;
+    box-shadow: 0 2px 8px rgba(0, 95, 184, 0.25);
+  }
 }
 
 .tool-page__footer {
@@ -213,4 +281,752 @@ code,
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ---- Shared component classes (global) ---- */
+/* These were previously defined inside the header / dialog-host components with
+   emulated ViewEncapsulation, so any other component using them (toolbars,
+   panels, dialogs, etc.) rendered unstyled. They are global now. */
+.pf-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  height: 40px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  &:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none !important;
+  }
+}
+
+.pf-btn--sm {
+  min-height: 32px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  border-radius: 7px;
+  gap: 6px;
+}
+
+.pf-btn--lg {
+  min-height: 46px;
+  height: 46px;
+  padding: 0 22px;
+  font-size: 14.5px;
+  border-radius: 11px;
+  gap: 8px;
+}
+
+.pf-btn--xl {
+  min-height: 52px;
+  height: 52px;
+  padding: 0 28px;
+  font-size: 15.5px;
+  font-weight: 700;
+  border-radius: 12px;
+  gap: 10px;
+}
+
+.pf-btn--primary {
+  background-color: var(--pf-primary);
+  color: var(--pf-on-primary);
+  border-color: var(--pf-primary);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--pf-primary) 28%, transparent);
+
+  &:hover:not(:disabled) {
+    filter: brightness(1.06);
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--pf-primary) 40%, transparent);
+    text-decoration: none;
+  }
+}
+
+.pf-btn--secondary {
+  background-color: var(--pf-surface-container-high);
+  color: var(--pf-on-surface);
+  border-color: var(--pf-outline-variant);
+
+  &:hover:not(:disabled) {
+    background-color: var(--pf-surface-container-highest);
+    border-color: var(--pf-outline);
+    color: var(--pf-primary);
+    text-decoration: none;
+  }
+}
+
+.pf-btn--ghost {
+  background-color: transparent;
+  border-color: var(--pf-outline-variant);
+  color: var(--pf-on-surface);
+
+  &:hover:not(:disabled) {
+    background-color: var(--pf-surface-container);
+    border-color: var(--pf-outline);
+    text-decoration: none;
+  }
+}
+
+.pf-btn--outline {
+  background-color: transparent;
+  border: 1.5px solid var(--pf-primary);
+  color: var(--pf-primary);
+
+  &:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--pf-primary) 10%, transparent);
+    text-decoration: none;
+  }
+}
+
+.pf-btn--danger {
+  background-color: var(--pf-error);
+  color: var(--pf-on-error);
+
+  &:hover:not(:disabled) {
+    filter: brightness(0.94);
+    text-decoration: none;
+  }
+}
+
+.pf-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--pf-outline-variant);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface-container-lowest);
+  color: var(--pf-on-surface);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pf-icon-btn:hover:not(:disabled) {
+  background-color: var(--pf-surface-container);
+}
+
+.pf-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- Header & Editor Scoped Buttons (Preserve exact compact 26px button sizing matching toolbar tools) ---- */
+app-header,
+.pf-header,
+app-editor-shell,
+.editor-shell,
+.editor-shell__header,
+app-editor,
+.editor,
+.export-modal-backdrop,
+.stamp-modal-backdrop,
+.signature-modal-backdrop,
+.pf-dialog-backdrop,
+.pf-dialog {
+  .pf-btn {
+    min-height: 26px !important;
+    height: 26px !important;
+    max-height: 26px !important;
+    padding: 0 10px !important;
+    font-size: 11.5px !important;
+    font-weight: 600 !important;
+    border-radius: var(--pf-radius, 6px) !important;
+    gap: 5px !important;
+    line-height: 1 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  .pf-btn--sm {
+    min-height: 26px !important;
+    height: 26px !important;
+    max-height: 26px !important;
+    padding: 0 8px !important;
+    font-size: 11px !important;
+    border-radius: var(--pf-radius, 6px) !important;
+    gap: 4px !important;
+    line-height: 1 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  .pf-btn--xl,
+  .pf-btn--lg {
+    min-height: 28px !important;
+    height: 28px !important;
+    padding: 0 12px !important;
+    font-size: 12px !important;
+    border-radius: var(--pf-radius, 6px) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  .pf-icon-btn {
+    width: 26px !important;
+    height: 26px !important;
+    min-height: 26px !important;
+    max-height: 26px !important;
+    min-width: 26px !important;
+    max-width: 26px !important;
+    font-size: 11.5px !important;
+    border-radius: var(--pf-radius, 6px) !important;
+    padding: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+}
+
+.pf-privacy-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: var(--pf-radius-full);
+  background-color: var(--pf-surface-container);
+  color: var(--pf-on-surface-variant);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pf-privacy-pill i {
+  color: var(--pf-success);
+}
+
+.pf-input {
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--pf-outline-variant);
+  border-radius: var(--pf-radius);
+  background-color: var(--pf-surface);
+  color: var(--pf-on-surface);
+  font-size: 14px;
+}
+
+.pf-input:focus-visible {
+  outline: 2px solid var(--pf-primary);
+  outline-offset: 1px;
+}
+
+/* ---- Chip (compact pill toggle) ---- */
+.pf-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--pf-outline-variant);
+  background-color: var(--pf-surface-container-lowest);
+  color: var(--pf-on-surface);
+  border-radius: var(--pf-radius-full);
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.pf-chip:hover:not(:disabled) {
+  background-color: var(--pf-surface-container-high);
+}
+
+.pf-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pf-chip--active {
+  background-color: var(--pf-primary);
+  color: var(--pf-on-primary);
+  border-color: var(--pf-primary);
+}
+
+/* ---- Universal Tool Landing & File Selection Card (Editor Symmetry) ---- */
+.pf-landing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 16px 0 32px;
+  box-sizing: border-box;
+
+  @media (max-width: 768px) {
+    padding: 12px 0 20px;
+  }
+}
+
+.pf-landing-card {
+  width: 100%;
+  max-width: 880px;
+  background: var(--pf-surface-container-low, #ffffff);
+  border: 1px solid var(--pf-outline-variant, #e5e7eb);
+  border-radius: 20px;
+  padding: 38px 40px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.04);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+  margin: 0 auto;
+
+  @media (max-width: 768px) {
+    padding: 22px 16px;
+    border-radius: 16px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.03);
+  }
+}
+
+.pf-landing-badge {
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pf-primary) 15%, transparent), color-mix(in srgb, var(--pf-primary) 6%, transparent));
+  border: 1px solid color-mix(in srgb, var(--pf-primary) 22%, transparent);
+  color: var(--pf-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  margin-bottom: 14px;
+
+  @media (max-width: 768px) {
+    width: 48px;
+    height: 48px;
+    font-size: 22px;
+    border-radius: 12px;
+    margin-bottom: 10px;
+  }
+}
+
+.pf-landing-title {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--pf-on-surface);
+  line-height: 1.25;
+
+  @media (max-width: 768px) {
+    font-size: 19px;
+  }
+}
+
+.pf-landing-subtitle {
+  margin: 0 0 22px;
+  font-size: 14px;
+  color: var(--pf-on-surface-variant);
+  line-height: 1.5;
+  max-width: 660px;
+
+  @media (max-width: 768px) {
+    font-size: 12.5px;
+    margin-bottom: 16px;
+  }
+}
+
+.pf-landing-dropzone {
+  width: 100%;
+  margin-bottom: 20px;
+
+  .pf-dropzone {
+    padding: 38px 24px;
+    border-radius: 16px;
+  }
+}
+
+.pf-landing-privacy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--pf-on-surface-variant);
+  background: color-mix(in srgb, var(--pf-success) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pf-success) 20%, transparent);
+  padding: 8px 16px;
+  border-radius: 9999px;
+  margin-bottom: 20px;
+  max-width: 600px;
+  line-height: 1.3;
+
+  i {
+    color: var(--pf-success);
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 768px) {
+    font-size: 11.5px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    text-align: left;
+    margin-bottom: 14px;
+  }
+}
+
+.pf-landing-features {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.pf-feat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--pf-on-surface-variant);
+  background: var(--pf-surface-container-high, #f1f5f9);
+  border-radius: 9999px;
+  border: 1px solid var(--pf-outline-variant, #e5e7eb);
+
+  i {
+    color: var(--pf-primary);
+    font-size: 10.5px;
+  }
+
+  @media (max-width: 768px) {
+    padding: 3px 8px;
+    font-size: 11px;
+  }
+}
+
+/* Category Badge Variations for .pf-landing-badge */
+.pf-landing-badge--organize {
+  background: var(--pf-cat-organize-bg, rgba(5, 150, 105, 0.1));
+  border-color: color-mix(in srgb, var(--pf-cat-organize) 30%, transparent);
+  color: var(--pf-cat-organize, #059669);
+}
+
+.pf-landing-badge--optimize {
+  background: var(--pf-cat-optimize-bg, rgba(217, 119, 6, 0.1));
+  border-color: color-mix(in srgb, var(--pf-cat-optimize) 30%, transparent);
+  color: var(--pf-cat-optimize, #d97706);
+}
+
+.pf-landing-badge--convert {
+  background: var(--pf-cat-edit-bg, rgba(37, 99, 235, 0.1));
+  border-color: color-mix(in srgb, var(--pf-cat-edit) 30%, transparent);
+  color: var(--pf-cat-edit, #2563eb);
+}
+
+.pf-landing-badge--security {
+  background: var(--pf-cat-security-bg, rgba(124, 58, 237, 0.1));
+  border-color: color-mix(in srgb, var(--pf-cat-security) 30%, transparent);
+  color: var(--pf-cat-security, #7c3aed);
+}
+
+/* ---- Symmetric Tool Page Header & Navigation ---- */
+.tool-header {
+  margin-bottom: 24px;
+}
+
+.tool-header__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.tool-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pf-on-surface-variant);
+  text-decoration: none;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: var(--pf-surface-container-low);
+  border: 1px solid var(--pf-outline-variant);
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: var(--pf-primary);
+    border-color: var(--pf-primary);
+    background: var(--pf-surface-container);
+    text-decoration: none;
+  }
+
+  i {
+    font-size: 12px;
+    transition: transform 0.2s ease;
+  }
+
+  &:hover i {
+    transform: translateX(-3px);
+  }
+}
+
+.tool-cat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+
+  &--organize {
+    background: var(--pf-cat-organize-bg);
+    color: var(--pf-cat-organize);
+    border: 1px solid color-mix(in srgb, var(--pf-cat-organize) 30%, transparent);
+  }
+
+  &--optimize {
+    background: var(--pf-cat-optimize-bg);
+    color: var(--pf-cat-optimize);
+    border: 1px solid color-mix(in srgb, var(--pf-cat-optimize) 30%, transparent);
+  }
+
+  &--convert, &--edit {
+    background: var(--pf-cat-edit-bg);
+    color: var(--pf-cat-edit);
+    border: 1px solid color-mix(in srgb, var(--pf-cat-edit) 30%, transparent);
+  }
+
+  &--security {
+    background: var(--pf-cat-security-bg);
+    color: var(--pf-cat-security);
+    border: 1px solid color-mix(in srgb, var(--pf-cat-security) 30%, transparent);
+  }
+}
+
+.tool-header__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+
+  .tool-header__title {
+    margin-bottom: 0;
+  }
+}
+
+.tool-header__title {
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--pf-on-surface);
+  line-height: 1.2;
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+
+  @media (max-width: 768px) {
+    font-size: 24px;
+  }
+}
+
+.tool-header__subtitle {
+  font-size: 14.5px;
+  color: var(--pf-on-surface-variant);
+  line-height: 1.5;
+  margin: 0;
+  max-width: 640px;
+
+  @media (max-width: 768px) {
+    font-size: 13.5px;
+  }
+}
+
+/* ---- Symmetric Tool Action Bar ---- */
+.tool-action-bar {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+
+  .pf-btn {
+    min-height: 52px;
+    height: 52px;
+    font-size: 15.5px;
+    font-weight: 700;
+    border-radius: 12px;
+    gap: 10px;
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--pf-primary) 28%, transparent);
+  }
+
+  .tool-action-bar__hint {
+    font-size: 12.5px;
+    color: var(--pf-on-surface-variant);
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    i {
+      color: var(--pf-primary);
+    }
+  }
+}
+
+/* ---- Symmetric Tool Trust Strip ---- */
+.tool-trust-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 44px;
+  padding-top: 28px;
+  border-top: 1px solid var(--pf-outline-variant);
+
+  @media (max-width: 860px) {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    margin-top: 32px;
+    padding-top: 20px;
+  }
+}
+
+.tool-trust-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--pf-surface-container-low);
+  border-radius: 12px;
+  border: 1px solid var(--pf-outline-variant);
+
+  i {
+    font-size: 18px;
+    color: var(--pf-primary);
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+
+  strong {
+    display: block;
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--pf-on-surface);
+    margin-bottom: 2px;
+  }
+
+  span {
+    display: block;
+    font-size: 12px;
+    color: var(--pf-on-surface-variant);
+    line-height: 1.35;
+  }
+}
+
+/* ---- High Contrast Mode (Accessibility) ---- */
+html[data-high-contrast="true"] {
+  --pf-outline: #000000;
+  --pf-outline-variant: #1f2937;
+
+  .pf-card,
+  .tool-header,
+  .tool-trust-item,
+  .theme-card,
+  .settings-section,
+  .storage-meter,
+  .storage-card,
+  .backup-card,
+  .shortcut-group-card,
+  .editor-shell__header,
+  .editor__toolbar,
+  .editor__viewbar,
+  .editor__sidebar,
+  .editor__page-frame,
+  .page-thumbnail,
+  .properties-panel {
+    border-color: #000000 !important;
+  }
+
+  .editor__tool,
+  .editor__chip,
+  .zoom-btn,
+  .pf-btn {
+    border: 2px solid currentColor !important;
+  }
+
+  .editor__page-frame {
+    box-shadow: 0 0 0 2px #000000 !important;
+  }
+
+  .page-thumbnail--selected {
+    box-shadow: 0 0 0 3px #000000 !important;
+  }
+
+  :focus-visible {
+    outline: 3px solid #000000 !important;
+    outline-offset: 2px !important;
+  }
+}
+
+html[data-theme="dark"][data-high-contrast="true"] {
+  --pf-outline: #ffffff;
+  --pf-outline-variant: #e5e7eb;
+
+  .pf-card,
+  .tool-header,
+  .tool-trust-item,
+  .theme-card,
+  .settings-section,
+  .storage-meter,
+  .storage-card,
+  .backup-card,
+  .shortcut-group-card,
+  .editor-shell__header,
+  .editor__toolbar,
+  .editor__viewbar,
+  .editor__sidebar,
+  .editor__page-frame,
+  .page-thumbnail,
+  .properties-panel {
+    border-color: #ffffff !important;
+  }
+
+  .editor__tool,
+  .editor__chip,
+  .zoom-btn,
+  .pf-btn {
+    border: 2px solid currentColor !important;
+  }
+
+  .editor__page-frame {
+    box-shadow: 0 0 0 2px #ffffff !important;
+  }
+
+  .page-thumbnail--selected {
+    box-shadow: 0 0 0 3px #ffffff !important;
+  }
+
+  :focus-visible {
+    outline: 3px solid #38bdf8 !important;
+    outline-offset: 2px !important;
+  }
 }

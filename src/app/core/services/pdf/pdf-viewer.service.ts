@@ -1,20 +1,8 @@
-import * as pdfjsLib from 'pdfjs-dist';
-import type {
-  PDFDocumentProxy,
-  PDFPageProxy,
-  PDFDocumentLoadingTask,
-} from 'pdfjs-dist';
 import { Injectable } from '@angular/core';
-import { RawTextItem } from '../../models/pdf.models';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
-
-function applyTransform(
-  x: number,
-  y: number,
-  m: readonly number[],
-): [number, number] {
-  return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+export interface PageSize {
+  readonly width: number;
+  readonly height: number;
 }
 
 export interface Cancellable {
@@ -22,34 +10,187 @@ export interface Cancellable {
   readonly promise: Promise<unknown>;
 }
 
-export interface PageSize {
+export interface PdfTextSpan {
+  readonly str: string;
+  readonly dir?: string;
+  readonly transform: readonly number[];
   readonly width: number;
   readonly height: number;
 }
 
+export interface PdfPageTextData {
+  readonly spans: readonly PdfTextSpan[];
+  readonly viewportWidth: number;
+  readonly viewportHeight: number;
+  readonly rotation: number;
+  readonly viewport: any;
+}
+
+/**
+ * Calculates the exact normalized bounding box ([0, 1] relative to viewport width/height)
+ * for a matching character range within a PDF text span.
+ */
+export function calcMatchNormRect(
+  span: PdfTextSpan,
+  charStart: number,
+  charEnd: number,
+  viewport: any,
+  offscreenCtx: CanvasRenderingContext2D | null,
+): { x: number; y: number; width: number; height: number } {
+  const str = span.str;
+  const strLen = str.length;
+  if (strLen === 0) {
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+
+  const safeStart = Math.max(0, Math.min(charStart, strLen));
+  const safeEnd = Math.max(safeStart, Math.min(charEnd, strLen));
+
+  const fontHeight =
+    span.height > 0
+      ? span.height
+      : Math.hypot(span.transform[2], span.transform[3]) ||
+        Math.hypot(span.transform[0], span.transform[1]) ||
+        12;
+
+  let startFrac = 0;
+  let endFrac = 1;
+
+  if (offscreenCtx) {
+    offscreenCtx.font = `${Math.round(fontHeight)}px sans-serif`;
+    const totalW = offscreenCtx.measureText(str).width;
+    if (totalW > 0) {
+      startFrac = offscreenCtx.measureText(str.slice(0, safeStart)).width / totalW;
+      endFrac = offscreenCtx.measureText(str.slice(0, safeEnd)).width / totalW;
+    } else {
+      startFrac = safeStart / strLen;
+      endFrac = safeEnd / strLen;
+    }
+  } else {
+    startFrac = safeStart / strLen;
+    endFrac = safeEnd / strLen;
+  }
+
+  const spanWidth = span.width > 0 ? span.width : fontHeight * 0.6 * strLen;
+  const localXStart = startFrac * spanWidth;
+  const localXEnd = endFrac * spanWidth;
+  const localYBottom = -0.15 * fontHeight;
+  const localYTop = 0.85 * fontHeight;
+
+  const a = span.transform[0];
+  const b = span.transform[1];
+  const c = span.transform[2];
+  const d = span.transform[3];
+  const tx = span.transform[4];
+  const ty = span.transform[5];
+
+  const hAB = Math.hypot(a, b) || 1;
+  const ux = a / hAB;
+  const uy = b / hAB;
+  const hCD = Math.hypot(c, d) || 1;
+  const vx = c / hCD;
+  const vy = d / hCD;
+
+  const toPdfPoint = (lx: number, ly: number): [number, number] => [
+    tx + lx * ux + ly * vx,
+    ty + lx * uy + ly * vy,
+  ];
+
+  const c1 = toPdfPoint(localXStart, localYBottom);
+  const c2 = toPdfPoint(localXEnd, localYBottom);
+  const c3 = toPdfPoint(localXEnd, localYTop);
+  const c4 = toPdfPoint(localXStart, localYTop);
+
+  const toViewPoint = (p: [number, number]): [number, number] => {
+    if (viewport && typeof viewport.convertToViewportPoint === 'function') {
+      return viewport.convertToViewportPoint(p[0], p[1]);
+    }
+    const t = viewport?.transform;
+    if (t && t.length >= 6) {
+      return [t[0] * p[0] + t[2] * p[1] + t[4], t[1] * p[0] + t[3] * p[1] + t[5]];
+    }
+    return [p[0], (viewport?.height || 0) - p[1]];
+  };
+
+  const v1 = toViewPoint(c1);
+  const v2 = toViewPoint(c2);
+  const v3 = toViewPoint(c3);
+  const v4 = toViewPoint(c4);
+
+  const minX = Math.min(v1[0], v2[0], v3[0], v4[0]);
+  const maxX = Math.max(v1[0], v2[0], v3[0], v4[0]);
+  const minY = Math.min(v1[1], v2[1], v3[1], v4[1]);
+  const maxY = Math.max(v1[1], v2[1], v3[1], v4[1]);
+
+  const vpW = viewport?.width || 1;
+  const vpH = viewport?.height || 1;
+
+  return {
+    x: Math.max(0, minX / vpW),
+    y: Math.max(0, minY / vpH),
+    width: Math.max(0.002, (maxX - minX) / vpW),
+    height: Math.max(0.004, (maxY - minY) / vpH),
+  };
+}
+
+// Structural types for the pdf.js document / page proxy that ngx-extended-pdf-viewer
+// hands to us via its `pagesLoaded` event. ngx owns the single pdf.js instance at
+// runtime (the only pdf.js used by the app). These minimal shapes are enough
+// for sizing, text extraction and canvas rendering.
+interface PdfjsViewport {
+  readonly width: number;
+  readonly height: number;
+}
+interface PdfjsTextItem {
+  readonly str?: string;
+  readonly dir?: string;
+  readonly transform?: readonly number[];
+  readonly width?: number;
+  readonly height?: number;
+}
+interface PdfjsRenderTask {
+  cancel(): void;
+  readonly promise: Promise<void>;
+}
+interface PdfjsPage {
+  getViewport(params: { scale: number; rotation?: number }): PdfjsViewport;
+  getTextContent(): Promise<{ items: readonly PdfjsTextItem[] }>;
+  render(params: {
+    canvas: HTMLCanvasElement;
+    canvasContext: CanvasRenderingContext2D;
+    viewport: PdfjsViewport;
+  }): PdfjsRenderTask;
+}
+interface PdfjsDocument {
+  readonly numPages: number;
+  getPage(index: number): Promise<PdfjsPage>;
+}
+
 @Injectable({ providedIn: 'root' })
 export class PdfViewerService {
-  private doc: PDFDocumentProxy | null = null;
-  private task: PDFDocumentLoadingTask | null = null;
-  private readonly rawTextCache = new Map<number, RawTextItem[]>();
-  /** Serializes render() calls per canvas so a cancelled render releases the
-   *  canvas before the next one starts (PDF.js forbids concurrent renders on
-   *  the same canvas, which otherwise blanks pages during navigation). */
-  private readonly renderLocks = new WeakMap<HTMLCanvasElement, Promise<void>>();
+  private doc: PdfjsDocument | null = null;
+  private textDataCache = new Map<string, PdfPageTextData>();
 
   get pageCount(): number {
     return this.doc?.numPages ?? 0;
   }
 
-  async load(data: ArrayBuffer): Promise<number> {
-    this.destroy();
-    const task = pdfjsLib.getDocument({ data: data.slice(0) });
-    this.task = task;
-    this.doc = await task.promise;
-    return this.doc.numPages;
+  get loaded(): boolean {
+    return this.doc !== null;
   }
 
-  private async getPage(pageIndex: number): Promise<PDFPageProxy> {
+  /** Called from the editor once ngx-extended-pdf-viewer has loaded the document. */
+  setDocument(doc: unknown): void {
+    this.doc = doc as PdfjsDocument;
+    this.textDataCache.clear();
+  }
+
+  reset(): void {
+    this.doc = null;
+    this.textDataCache.clear();
+  }
+
+  private async getPage(pageIndex: number): Promise<PdfjsPage> {
     if (!this.doc) {
       throw new Error('No PDF document is loaded.');
     }
@@ -75,39 +216,22 @@ export class PdfViewerService {
     if (!ctx) {
       return;
     }
-    const viewport0 = viewport;
-    const run = async () => {
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.max(1, Math.floor(viewport0.width * dpr));
-      canvas.height = Math.max(1, Math.floor(viewport0.height * dpr));
-      canvas.style.width = `${Math.floor(viewport0.width)}px`;
-      canvas.style.height = `${Math.floor(viewport0.height)}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const prev = renderTaskRef?.task;
-      if (prev) {
-        prev.cancel();
-        try {
-          await prev.promise;
-        } catch {
-          /* previous render cancelled */
-        }
-      }
-      const task = page.render({ canvas, canvasContext: ctx, viewport: viewport0 });
-      if (renderTaskRef) {
-        renderTaskRef.task = task as unknown as Cancellable;
-      }
-      try {
-        await task.promise;
-      } catch {
-        /* render cancelled or failed */
-      }
-    };
-    const chain = (this.renderLocks.get(canvas) ?? Promise.resolve()).then(
-      run,
-      run,
-    );
-    this.renderLocks.set(canvas, chain);
-    await chain;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.floor(viewport.width * dpr));
+    canvas.height = Math.max(1, Math.floor(viewport.height * dpr));
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    renderTaskRef?.task?.cancel();
+    const task = page.render({ canvas, canvasContext: ctx, viewport });
+    if (renderTaskRef) {
+      renderTaskRef.task = task as unknown as Cancellable;
+    }
+    try {
+      await task.promise;
+    } catch {
+      /* render cancelled or failed */
+    }
   }
 
   async renderThumbnail(
@@ -124,100 +248,54 @@ export class PdfViewerService {
     }
     canvas.width = Math.max(1, Math.floor(viewport.width));
     canvas.height = Math.max(1, Math.floor(viewport.height));
-    const run = async () => {
-      try {
-        await page.render({ canvas, canvasContext: ctx, viewport }).promise;
-      } catch {
-        /* render cancelled or failed */
-      }
-    };
-    const chain = (this.renderLocks.get(canvas) ?? Promise.resolve()).then(
-      run,
-      run,
-    );
-    this.renderLocks.set(canvas, chain);
-    await chain;
+    try {
+      await page
+        .render({ canvas, canvasContext: ctx, viewport })
+        .promise.catch(() => undefined);
+    } catch {
+      /* render cancelled or failed */
+    }
   }
 
   async getPageText(pageIndex: number): Promise<string> {
     const page = await this.getPage(pageIndex);
     const content = await page.getTextContent();
-    const items = content.items as Array<{ str?: string }>;
-    return items
+    return content.items
       .filter((it) => typeof it.str === 'string')
       .map((it) => it.str ?? '')
       .join(' ');
   }
 
-  /**
-   * Extracts positioned text runs for a page (cached). Geometry is reported
-   * in the page's unrotated PDF user space so callers can re-project it to
-   * any display scale/rotation.
-   */
-  async getPageRawTextItems(pageIndex: number): Promise<RawTextItem[]> {
-    const cached = this.rawTextCache.get(pageIndex);
+  async getPageTextData(pageIndex: number, rotation = 0): Promise<PdfPageTextData> {
+    const key = `${pageIndex}-${rotation}`;
+    const cached = this.textDataCache.get(key);
     if (cached) {
       return cached;
     }
     const page = await this.getPage(pageIndex);
     const content = await page.getTextContent();
-    const source = content.items as Array<{
-      str?: string;
-      transform?: number[];
-      width?: number;
-      height?: number;
-    }>;
-    const result: RawTextItem[] = [];
-    let index = 0;
-    for (const it of source) {
-      if (typeof it.str !== 'string' || !it.str.trim() || !it.transform) {
-        continue;
+    const viewport = page.getViewport({ scale: 1, rotation });
+    const spans: PdfTextSpan[] = [];
+    for (const raw of content.items) {
+      if (raw && typeof (raw as any).str === 'string') {
+        const it = raw as any;
+        spans.push({
+          str: it.str,
+          dir: it.dir,
+          transform: it.transform || [1, 0, 0, 1, 0, 0],
+          width: typeof it.width === 'number' ? it.width : 0,
+          height: typeof it.height === 'number' ? it.height : 0,
+        });
       }
-      const transform = it.transform;
-      const w = it.width ?? 0;
-      const h = it.height ?? 0;
-      const corners = [
-        applyTransform(0, 0, transform),
-        applyTransform(w, 0, transform),
-        applyTransform(0, h, transform),
-        applyTransform(w, h, transform),
-      ];
-      const xs = corners.map((c) => c[0]);
-      const ys = corners.map((c) => c[1]);
-      const x = Math.min(...xs);
-      const y = Math.min(...ys);
-      const baseline = applyTransform(0, 0, transform);
-      const fontSize = Math.hypot(transform[0], transform[1]) || h || 12;
-      result.push({
-        id: `t${pageIndex}-${index++}`,
-        str: it.str,
-        transform,
-        width: w,
-        height: h,
-        pdfRect: { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y },
-        baseline: { x: baseline[0], y: baseline[1] },
-        fontSize,
-      });
     }
-    this.rawTextCache.set(pageIndex, result);
+    const result: PdfPageTextData = {
+      spans,
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
+      rotation,
+      viewport,
+    };
+    this.textDataCache.set(key, result);
     return result;
-  }
-
-  /** Returns the PDF.js viewport transform that maps PDF user space to display pixels. */
-  async getViewportTransform(
-    pageIndex: number,
-    scale: number,
-    rotation = 0,
-  ): Promise<number[]> {
-    const page = await this.getPage(pageIndex);
-    const viewport = page.getViewport({ scale, rotation });
-    return Array.from(viewport.transform);
-  }
-
-  destroy(): void {
-    void this.task?.destroy();
-    this.task = null;
-    this.doc = null;
-    this.rawTextCache.clear();
   }
 }

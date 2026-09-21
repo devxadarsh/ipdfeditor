@@ -17,6 +17,7 @@ export class EditorPagesService {
   private _lastSelectedId: string | null = null;
 
   readonly pages = this._pages.asReadonly();
+  readonly selected = this._selected.asReadonly();
   readonly selectedCount = computed(() => this._selected().size);
   readonly currentId = this._currentId.asReadonly();
   readonly pagesCount = computed(() => this._pages().length);
@@ -86,48 +87,43 @@ export class EditorPagesService {
     this._selected.set(new Set(this._pages().map((p) => p.id)));
   }
 
-  /* Snapshot/restore for history */
-  getPages(): EditorPage[] {
-    return this._pages();
-  }
-
-  setPages(pages: EditorPage[]): void {
-    this._pages.set(pages);
-    if (!pages.some((p) => p.id === this._currentId())) {
-      this._currentId.set(pages.length ? pages[0].id : null);
-      this._lastSelectedId = null;
-    }
-    const valid = new Set(pages.map((p) => p.id));
-    const sel = new Set(this._selected());
-    let changed = false;
-    for (const id of sel) {
-      if (!valid.has(id)) {
-        sel.delete(id);
-        changed = true;
-      }
-    }
-    if (changed) {
-      this._selected.set(sel);
-    }
-  }
-
   clearSelection(): void {
     this._selected.set(new Set());
     this._lastSelectedId = null;
   }
 
-  deleteSelected(): void {
+  restoreState(
+    pages: EditorPage[],
+    selected?: ReadonlySet<string>,
+    currentId?: string | null,
+  ): void {
+    this._pages.set(pages);
+    if (selected) {
+      this._selected.set(new Set(selected));
+    }
+    if (currentId !== undefined && currentId !== null && pages.some((p) => p.id === currentId)) {
+      this._currentId.set(currentId);
+    } else {
+      this._currentId.set(pages.length ? pages[0].id : null);
+    }
+  }
+
+  deleteSelected(): string[] {
     const sel = this._selected();
     if (!sel.size) {
-      return;
+      return [];
     }
     const remaining = this._pages().filter((p) => !sel.has(p.id));
+    const removed = this._pages()
+      .filter((p) => sel.has(p.id))
+      .map((p) => p.id);
     this._pages.set(remaining);
     this._selected.set(new Set());
     this._lastSelectedId = null;
     if (!remaining.some((p) => p.id === this._currentId())) {
       this._currentId.set(remaining.length ? remaining[0].id : null);
     }
+    return removed;
   }
 
   duplicateSelected(): void {
@@ -172,8 +168,15 @@ export class EditorPagesService {
     }
     const next = [...pages];
     const [moved] = next.splice(from, 1);
-    const clamped = Math.max(0, Math.min(toIndex, next.length));
-    next.splice(clamped, 0, moved);
+    // Insert before the drop target. When moving an item down, removing it
+    // shifts the trailing indices left by one, so the target's slot is
+    // `toIndex - 1` in the shortened array.
+    let insert = toIndex;
+    if (from < toIndex) {
+      insert = toIndex - 1;
+    }
+    insert = Math.max(0, Math.min(insert, next.length));
+    next.splice(insert, 0, moved);
     this._pages.set(next);
   }
 
@@ -189,22 +192,32 @@ export class EditorPagesService {
       return false;
     }
     try {
-      const src = await PDFDocument.load(file.data.slice(0));
+      const src = await PDFDocument.load(file.data.slice(0), { ignoreEncryption: true });
       const out = await PDFDocument.create();
+      const totalPages = src.getPageCount();
       const ordered = this._pages().filter((p) => sel.has(p.id));
-      const indices = ordered.map((p) => p.sourceIndex);
-      const copied = await out.copyPages(src, indices);
-      ordered.forEach((p, i) => {
-        copied[i].setRotation(degrees(p.rotation));
-        out.addPage(copied[i]);
-      });
+
+      for (const p of ordered) {
+        if (p.sourceIndex >= 0 && p.sourceIndex < totalPages) {
+          const [copied] = await out.copyPages(src, [p.sourceIndex]);
+          if (copied) {
+            copied.setRotation(degrees(p.rotation));
+            out.addPage(copied);
+          }
+        }
+      }
+
+      if (out.getPageCount() === 0) {
+        throw new Error('No valid pages could be extracted.');
+      }
+
       const bytes = await out.save();
       const base = file.name.replace(/\.pdf$/i, '');
       this.downloads.download(
-        new Blob([bytes], { type: 'application/pdf' }),
+        new Blob([bytes.slice()], { type: 'application/pdf' }),
         `${base}-extracted.pdf`,
       );
-      this.toasts.success(`Extracted ${ordered.length} page(s).`);
+      this.toasts.success(`Extracted ${out.getPageCount()} page(s).`);
       return true;
     } catch {
       this.toasts.error('Could not extract the selected pages.');

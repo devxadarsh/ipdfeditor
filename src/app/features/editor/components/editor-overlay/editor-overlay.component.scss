@@ -1,0 +1,213 @@
+:host {
+  display: block;
+  position: absolute;
+  inset: 0;
+  touch-action: pan-x pan-y pinch-zoom;
+}
+
+.overlay {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: pan-x pan-y pinch-zoom;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+
+  &--hand {
+    touch-action: pan-x pan-y pinch-zoom;
+    pointer-events: none;
+  }
+}
+
+.sel {
+  fill: none;
+  stroke: #2563eb;
+  stroke-dasharray: 4 3;
+  stroke-width: 1.5;
+  touch-action: none;
+  cursor: move;
+  pointer-events: all;
+}
+
+.sel--locked {
+  stroke: #f59e0b;
+  stroke-dasharray: 2 2;
+  touch-action: none;
+  cursor: default;
+}
+
+// When not in select mode, annotations do not intercept pointer events and do not show a drag cursor.
+// This allows creation/drawing tools to seamlessly create new items directly on top of existing ones.
+.ann-item {
+  pointer-events: none;
+  user-select: none;
+}
+
+.overlay--select {
+  .ann-item {
+    pointer-events: all;
+    cursor: move;
+
+    &--locked {
+      cursor: default;
+    }
+  }
+
+  .sel {
+    cursor: move;
+    pointer-events: all;
+  }
+}
+
+.sel-touch-border {
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.handles {
+  touch-action: none;
+}
+
+.handle-target {
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.handle-hit {
+  touch-action: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.handle {
+  fill: #ffffff;
+  stroke: #2563eb;
+  stroke-width: 1.5;
+  pointer-events: all;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.handle:hover {
+  fill: #2563eb;
+}
+
+.draft {
+  fill: rgba(37, 99, 235, 0.12);
+  stroke: #2563eb;
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+}
+
+.comment {
+  cursor: pointer;
+}
+
+.text-editor {
+  position: absolute;
+  margin: 0;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  resize: none;
+  outline: 2px solid #2563eb;
+  outline-offset: -2px;
+  line-height: 1.35;
+  white-space: pre;
+  overflow: hidden;
+  z-index: 5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.eraser-center-preview {
+  animation: eraserFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes eraserFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.comment-editor-box {
+  position: absolute;
+  z-index: 25;
+  width: 220px;
+  background: #ffffff;
+  border: 1.5px solid #f59e0b;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(245, 158, 11, 0.2);
+  padding: 8px;
+  box-sizing: border-box;
+  animation: commentFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.comment-editor-textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: #1f2937;
+  resize: vertical;
+  min-height: 48px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  line-height: 1.4;
+
+  &::placeholder {
+    color: #9ca3af;
+  }
+}
+
+.comment-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid #fef3c7;
+}
+
+.comment-editor-tip {
+  font-size: 10px;
+  color: #d97706;
+}
+
+.comment-editor-btn {
+  border: none;
+  background: #f59e0b;
+  color: #ffffff;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: #d97706;
+  }
+}
+
+@keyframes commentFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

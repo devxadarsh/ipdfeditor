@@ -40,3 +40,11 @@ testem.log
 # System files
 .DS_Store
 Thumbs.db
+graphify-out
+.npm
+.agents
+AGENTS.md
+my prompt.txt
+tmp
+.kilo
+PRD.md

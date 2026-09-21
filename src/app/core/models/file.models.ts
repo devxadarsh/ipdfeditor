@@ -1,4 +1,17 @@
-// File-handling domain models
+import { PdfAnnotation } from './pdf.models';
+
+export interface StoredPageLayout {
+  readonly id: string;
+  readonly sourceIndex: number;
+  readonly rotation: number;
+}
+
+export interface StoredEditorState {
+  readonly pages?: StoredPageLayout[];
+  readonly annotations?: Record<string, PdfAnnotation[]>;
+  readonly currentId?: string | null;
+  readonly viewports?: Record<string, { width: number; height: number }>;
+}
 
 export interface LoadedFile {
   readonly file: File;
@@ -6,4 +19,5 @@ export interface LoadedFile {
   readonly sizeBytes: number;
   readonly data: ArrayBuffer;
   readonly loadedAt: number;
+  readonly editorState?: StoredEditorState;
 }

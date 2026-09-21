@@ -11,11 +11,11 @@ import { FormsModule } from '@angular/forms';
 import { DialogService } from '../../../core/services/dialog.service';
 
 @Component({
-  selector: 'app-dialog-host',
-  standalone: true,
-  imports: [NgClass, FormsModule],
-  templateUrl: './dialog-host.component.html',
-  styleUrl: './dialog-host.component.scss',
+    selector: 'app-dialog-host',
+    standalone: true,
+    imports: [NgClass, FormsModule],
+    templateUrl: './dialog-host.component.html',
+    styleUrl: './dialog-host.component.scss'
 })
 export class DialogHostComponent {
   private readonly dialogs = inject(DialogService);
@@ -47,5 +47,9 @@ export class DialogHostComponent {
 
   cancel(): void {
     this.dialogs.close(false);
+  }
+
+  secondary(): void {
+    this.dialogs.closeSecondary();
   }
 }

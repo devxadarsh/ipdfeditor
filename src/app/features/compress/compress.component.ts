@@ -1,17 +1,41 @@
-import { Component, signal } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { Component, signal, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { NgClass } from '@angular/common';
 import { FileDropzoneComponent } from '../../shared/components/dropzone/file-dropzone.component';
+import { LoadedFile } from '../../core/models/file.models';
+import { formatBytes } from '../../core/utilities/file.util';
+import { PdfWorkerService } from '../../core/services/worker/pdf-worker.service';
+import { DownloadService } from '../../core/services/download/download.service';
+import { ToastService } from '../../core/services/toast.service';
+
+import { BreadcrumbsComponent } from '../../shared/components/breadcrumbs/breadcrumbs.component';
+import { ToolSeoContentComponent } from '../../shared/components/tool-seo-content/tool-seo-content.component';
+import { SeoService } from '../../core/services/seo/seo.service';
+import { SEO_CONFIGS } from '../../core/constants/seo-data';
 
 @Component({
   selector: 'app-compress',
   standalone: true,
-  imports: [RouterLink, FormsModule, NgClass, FileDropzoneComponent],
+  imports: [
+    FormsModule,
+    FileDropzoneComponent,
+    BreadcrumbsComponent,
+    ToolSeoContentComponent,
+  ],
   templateUrl: './compress.component.html',
   styleUrl: './compress.component.scss',
 })
 export class CompressComponent {
+  private readonly worker = inject(PdfWorkerService);
+  private readonly downloads = inject(DownloadService);
+  private readonly toasts = inject(ToastService);
+  private readonly seo = inject(SeoService);
+
+  readonly seoConfig = SEO_CONFIGS['compress'];
+
+  constructor() {
+    this.seo.updatePage(this.seoConfig);
+  }
+
   readonly level = signal<'recommended' | 'strong' | 'extreme'>('recommended');
   readonly levels = [
     { value: 'recommended', label: 'Recommended', hint: 'Best balance of size and quality' },
@@ -19,7 +43,63 @@ export class CompressComponent {
     { value: 'extreme', label: 'Extreme', hint: 'Maximum reduction, visible quality loss' },
   ] as const;
 
+  readonly loadedFile = signal<LoadedFile | null>(null);
+  readonly compressing = signal<boolean>(false);
+  readonly result = signal<{
+    originalBytes: number;
+    compressedBytes: number;
+    ratio: number;
+  } | null>(null);
+
+  protected readonly formatBytes = formatBytes;
+
   setLevel(l: 'recommended' | 'strong' | 'extreme'): void {
     this.level.set(l);
+  }
+
+  onFileLoaded(files: LoadedFile[]): void {
+    if (files.length > 0) {
+      this.loadedFile.set(files[0]);
+      this.result.set(null);
+      this.toasts.info(`Loaded ${files[0].name} (${formatBytes(files[0].sizeBytes)})`);
+    }
+  }
+
+  clearFile(): void {
+    this.loadedFile.set(null);
+    this.result.set(null);
+  }
+
+  async compress(): Promise<void> {
+    const file = this.loadedFile();
+    if (!file) return;
+
+    this.compressing.set(true);
+    try {
+      const sourceBytes = new Uint8Array(file.data);
+      const compressedBytes = await this.worker.compressPdf(sourceBytes, this.level());
+
+      const origSize = sourceBytes.byteLength;
+      const newSize = compressedBytes.byteLength;
+      const reduction = Math.max(0, Math.round(((origSize - newSize) / origSize) * 100));
+
+      this.result.set({
+        originalBytes: origSize,
+        compressedBytes: newSize,
+        ratio: reduction,
+      });
+
+      const blob = new Blob([compressedBytes as BlobPart], { type: 'application/pdf' });
+      const outName = file.name.replace(/\.pdf$/i, '') + '-compressed.pdf';
+      this.downloads.download(blob, outName);
+      this.toasts.success(`Compressed! Reduced by ${reduction}%.`);
+    } catch (err) {
+      console.error('[CompressComponent] Compression error:', err);
+      this.toasts.error(
+        err instanceof Error ? err.message : 'Compression failed.',
+      );
+    } finally {
+      this.compressing.set(false);
+    }
   }
 }

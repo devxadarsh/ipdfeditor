@@ -1,0 +1,2510 @@
+<div class="props">
+  <header class="props__head">
+    <span class="props__title">Properties</span>
+    <span class="props__tool-badge" [title]="toolLabel() + ' tool active'">
+      <i [class]="toolIcon()"></i>{{ toolLabel() }}
+    </span>
+    <button
+      type="button"
+      class="props__icon"
+      (click)="collapse.emit()"
+      title="Collapse properties panel"
+      aria-label="Collapse properties panel"
+    ><i class="fa-solid fa-sliders"></i></button>
+  </header>
+
+  @if (selectedIds().length > 1) {
+    <app-panel-section [title]="'Multiple Items (' + selectedIds().length + ')'" icon="fa-solid fa-layer-group">
+      <!-- SUMMARY & COUNT -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <span class="props__label">Selection</span>
+          <span class="props__value-badge">{{ selectedIds().length }} objects</span>
+        </div>
+      </div>
+
+      <!-- GROUP MANAGEMENT -->
+      <div class="props__group">
+        <label class="props__label">Group Management</label>
+        <div class="props__seg-group props__seg-group--full" style="margin-bottom: 8px;">
+          @if (!isGrouped()) {
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              (click)="groupSelected()"
+              title="Group selected items together (Ctrl/Cmd + G)"
+            >
+              <i class="fa-solid fa-object-group"></i> Group Selected
+            </button>
+          } @else {
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              (click)="ungroupSelected()"
+              title="Ungroup items (Ctrl/Cmd + Shift + G)"
+            >
+              <i class="fa-solid fa-object-ungroup"></i> Ungroup
+            </button>
+          }
+          @if (canRegroup() && !isGrouped()) {
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              (click)="regroupSelected()"
+              title="Regroup previously disbanded group (Ctrl/Cmd + Alt + G)"
+            >
+              <i class="fa-solid fa-rotate-left"></i> Regroup
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- ALIGNMENT & DISTRIBUTION TOOLBAR -->
+      <div class="props__group">
+        <label class="props__label">Align & Distribute</label>
+        <div class="props__seg-group props__seg-group--full" style="margin-bottom: 6px;">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="alignSelected('left')"
+            title="Align Left"
+            aria-label="Align Left"
+          >
+            <i class="fa-solid fa-align-left"></i>
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="alignSelected('center')"
+            title="Align Horizontal Center"
+            aria-label="Align Horizontal Center"
+          >
+            <i class="fa-solid fa-align-center"></i>
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="alignSelected('right')"
+            title="Align Right"
+            aria-label="Align Right"
+          >
+            <i class="fa-solid fa-align-right"></i>
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="alignSelected('top')"
+            title="Align Top"
+            aria-label="Align Top"
+          >
+            <i class="fa-solid fa-arrows-up-to-line"></i>
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="alignSelected('middle')"
+            title="Align Vertical Middle"
+            aria-label="Align Vertical Middle"
+          >
+            <i class="fa-solid fa-grip-lines"></i>
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="alignSelected('bottom')"
+            title="Align Bottom"
+            aria-label="Align Bottom"
+          >
+            <i class="fa-solid fa-arrows-down-to-line"></i>
+          </button>
+        </div>
+        @if (selectedIds().length >= 3) {
+          <div class="props__seg-group props__seg-group--full">
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              (click)="distributeSelected('horizontal')"
+              title="Distribute Horizontally (Equal Spacing)"
+            >
+              <i class="fa-solid fa-arrows-left-right"></i> Distribute Horizontally
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              (click)="distributeSelected('vertical')"
+              title="Distribute Vertically (Equal Spacing)"
+            >
+              <i class="fa-solid fa-arrows-up-down"></i> Distribute Vertically
+            </button>
+          </div>
+        }
+      </div>
+
+      <!-- LAYER Z-ORDER -->
+      <div class="props__group">
+        <label class="props__label">Layer Order</label>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="bringSelectedToFront()"
+            title="Bring selection to top layer"
+          >
+            <i class="fa-solid fa-arrow-up"></i> Bring to Front
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="sendSelectedToBack()"
+            title="Send selection to bottom layer"
+          >
+            <i class="fa-solid fa-arrow-down"></i> Send to Back
+          </button>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- BATCH OPACITY -->
+      <div class="props__group">
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel">Opacity</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value="100"
+            (input)="setBatchOpacityPercent($any($event.target).value)"
+            aria-label="Batch opacity slider"
+          />
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- BATCH ACTIONS -->
+      <div class="props__group">
+        <label class="props__label">Batch Actions</label>
+        <div class="props__seg-group props__seg-group--full" style="margin-bottom: 8px;">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="duplicateSelected()"
+            title="Duplicate all selected items"
+          >
+            <i class="fa-solid fa-copy"></i> Duplicate All
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="toggleBatchLock()"
+            title="Lock or unlock all selected items"
+          >
+            <i class="fa-solid fa-lock"></i> Lock / Unlock
+          </button>
+        </div>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__seg-btn--danger props__field--grow"
+            (click)="deleteSelected()"
+            title="Delete all selected items"
+          >
+            <i class="fa-solid fa-trash-can"></i> Delete Selected
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="clearSelection()"
+            title="Deselect all"
+          >
+            <i class="fa-solid fa-xmark"></i> Deselect
+          </button>
+        </div>
+      </div>
+    </app-panel-section>
+  } @else if (textEdit.activeRun(); as activeRun) {
+    @for (run of [activeRun]; track run.id) {
+      <app-panel-section title="PDF Text Properties" icon="fa-solid fa-i-cursor">
+      <button
+        type="button"
+        class="props__delete props__delete--ghost"
+        (click)="resetRunStyling()"
+        title="Reset to original PDF styling"
+        aria-label="Reset to original PDF styling"
+        psec-actions
+      >
+        <i class="fa-solid fa-rotate-left"></i>
+      </button>
+      <button
+        type="button"
+        class="props__delete"
+        (click)="finishTextEditing()"
+        title="Done editing text"
+        aria-label="Done editing text"
+        psec-actions
+      >
+        <i class="fa-solid fa-check"></i>
+      </button>
+
+      <!-- TEXT CONTENT -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Text Content</label>
+          <span class="props__value-badge">{{ run.text.length }} chars</span>
+        </div>
+        <textarea
+          class="pf-input props__textarea"
+          rows="2"
+          [value]="run.text"
+          (input)="updateRunText(run, $any($event.target).value)"
+          placeholder="Type text..."
+          aria-label="PDF text content"
+        ></textarea>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- TYPOGRAPHY -->
+      <div class="props__group">
+        <label class="props__label">Typography</label>
+        <div class="props__row props__row--inline">
+          <select
+            class="pf-input props__select-font"
+            [value]="getRunFontFamily(run)"
+            (change)="setRunFontFamily(run, $any($event.target).value)"
+            aria-label="Font family"
+          >
+            <option
+              [value]="getDetectedFontFamily(run)"
+              [selected]="getRunFontFamily(run) === getDetectedFontFamily(run)"
+            >
+              {{ getDetectedFontLabel(run) }} (Detected)
+            </option>
+            @for (opt of fontOptions; track opt.value) {
+              @if (opt.value !== getDetectedFontFamily(run) && opt.label !== getDetectedFontLabel(run)) {
+                <option
+                  [value]="opt.value"
+                  [selected]="getRunFontFamily(run) === opt.value"
+                >
+                  {{ opt.label }}
+                </option>
+              }
+            }
+          </select>
+          <select
+            class="pf-input props__select-step"
+            [value]="fontSizeStep()"
+            (change)="setFontSizeStep($any($event.target).value)"
+            title="Size increment factor (step)"
+            aria-label="Size increment factor"
+          >
+            <option value="0.1">±0.1</option>
+            <option value="0.25">±0.25</option>
+            <option value="0.5">±0.5</option>
+            <option value="1">±1</option>
+            <option value="2">±2</option>
+            <option value="5">±5</option>
+          </select>
+          <input
+            class="pf-color props__color-picker"
+            type="color"
+            [value]="toColor(getRunColor(run))"
+            (input)="setRunColor(run, $any($event.target).value)"
+            title="Text color"
+            aria-label="Text color"
+          />
+        </div>
+
+        <!-- Font size slider with quick step buttons controlled by the increment factor -->
+        <div class="props__row props__row--inline" style="margin-top: 2px;">
+          <span class="props__sublabel" style="width: 54px;">Size (pt)</span>
+          <button
+            type="button"
+            class="props__step-btn"
+            (click)="stepRunFontSize(run, -fontSizeStep())"
+            [title]="'Decrease font size by ' + fontSizeStep() + 'pt'"
+            [attr.aria-label]="'Decrease font size by ' + fontSizeStep() + 'pt'"
+          >
+            <i class="fa-solid fa-minus"></i>
+          </button>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="6"
+            max="72"
+            [step]="fontSizeStep()"
+            [value]="getRunFontSize(run)"
+            (input)="setRunFontSize(run, $any($event.target).value)"
+            aria-label="Font size slider"
+          />
+          <button
+            type="button"
+            class="props__step-btn"
+            (click)="stepRunFontSize(run, fontSizeStep())"
+            [title]="'Increase font size by ' + fontSizeStep() + 'pt'"
+            [attr.aria-label]="'Increase font size by ' + fontSizeStep() + 'pt'"
+          >
+            <i class="fa-solid fa-plus"></i>
+          </button>
+          <span class="props__value-badge">{{ getRunFontSize(run) }}pt</span>
+        </div>
+
+        <!-- Quick Text Color Swatches -->
+        <div class="props__swatches" style="margin-top: 2px;">
+          @for (s of textColorSwatches; track s.value) {
+            <button
+              type="button"
+              class="props__swatch"
+              [class.props__swatch--on]="getRunColor(run) === s.value"
+              [style.background]="s.value"
+              [title]="s.label"
+              [attr.aria-label]="'Set text color to ' + s.label"
+              (click)="setRunColor(run, s.value)"
+            ></button>
+          }
+        </div>
+
+        <!-- Bold / Italic / Underline & Align & Transform -->
+        <div class="props__row props__row--between" style="margin-top: 4px;">
+          <div class="props__seg-group">
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="isRunBold(run)"
+              (click)="toggleRunBold(run)"
+              title="Bold"
+              aria-label="Bold"
+            >
+              <i class="fa-solid fa-bold"></i>
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="isRunItalic(run)"
+              (click)="toggleRunItalic(run)"
+              title="Italic"
+              aria-label="Italic"
+            >
+              <i class="fa-solid fa-italic"></i>
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="isRunUnderline(run)"
+              (click)="toggleRunUnderline(run)"
+              title="Underline"
+              aria-label="Underline"
+            >
+              <i class="fa-solid fa-underline"></i>
+            </button>
+          </div>
+
+          <div class="props__seg-group">
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="getRunAlign(run) === 'left'"
+              (click)="setRunAlign(run, 'left')"
+              title="Align left"
+              aria-label="Align left"
+            >
+              <i class="fa-solid fa-align-left"></i>
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="getRunAlign(run) === 'center'"
+              (click)="setRunAlign(run, 'center')"
+              title="Align center"
+              aria-label="Align center"
+            >
+              <i class="fa-solid fa-align-center"></i>
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="getRunAlign(run) === 'right'"
+              (click)="setRunAlign(run, 'right')"
+              title="Align right"
+              aria-label="Align right"
+            >
+              <i class="fa-solid fa-align-right"></i>
+            </button>
+          </div>
+
+          <div class="props__seg-group">
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="getRunTransform(run) === 'uppercase'"
+              (click)="setRunTransform(run, 'uppercase')"
+              title="Uppercase (AA)"
+              aria-label="Uppercase"
+            >
+              AA
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="getRunTransform(run) === 'lowercase'"
+              (click)="setRunTransform(run, 'lowercase')"
+              title="Lowercase (aa)"
+              aria-label="Lowercase"
+            >
+              aa
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="getRunTransform(run) === 'capitalize'"
+              (click)="setRunTransform(run, 'capitalize')"
+              title="Capitalize (Aa)"
+              aria-label="Capitalize"
+            >
+              Aa
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- BACKGROUND COLOUR -->
+      <div class="props__group">
+        <label class="props__label">Background Colour</label>
+        <div class="props__swatches" style="margin-top: 4px;">
+          @for (s of backgroundSwatches; track s.value) {
+            <button
+              type="button"
+              class="props__swatch"
+              [class.props__swatch--on]="getRunBackgroundColor(run) === s.value"
+              [style.background]="s.value"
+              [title]="s.label"
+              [attr.aria-label]="'Set background to ' + s.label"
+              (click)="setRunBackgroundColor(run, s.value)"
+            ></button>
+          }
+          <input
+            class="pf-color props__swatch-input"
+            type="color"
+            [value]="toColor(getRunBackgroundColor(run))"
+            (input)="setRunBackgroundColor(run, $any($event.target).value)"
+            title="Custom background color"
+            aria-label="Custom background color"
+          />
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- SPACE BETWEEN FONT (LETTER SPACING) & LINE HEIGHT -->
+      <div class="props__group">
+        <label class="props__label">Space Between Font (Tracking)</label>
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel" style="width: 64px;">Letter Sp.</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="-3"
+            max="25"
+            step="0.5"
+            [value]="getRunLetterSpacing(run)"
+            (input)="setRunLetterSpacing(run, $any($event.target).value)"
+            title="Letter spacing / space between font"
+            aria-label="Space between font slider"
+          />
+          <input
+            class="pf-input props__input-size"
+            type="number"
+            min="-5"
+            max="30"
+            step="0.5"
+            [value]="getRunLetterSpacing(run)"
+            (input)="setRunLetterSpacing(run, $any($event.target).value)"
+            title="Space between font in points"
+            aria-label="Space between font input"
+          />
+          <span class="props__value-badge">{{ getRunLetterSpacing(run) }}pt</span>
+        </div>
+
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel" style="width: 64px;">Line Ht.</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="0.8"
+            max="3.0"
+            step="0.1"
+            [value]="getRunLineHeight(run)"
+            (input)="setRunLineHeight(run, $any($event.target).value)"
+            title="Line height"
+            aria-label="Line height"
+          />
+          <span class="props__value-badge">{{ getRunLineHeight(run) | number: '1.1-1' }}x</span>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- PADDING ADJUSTMENT -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Padding (Inner Spacing)</label>
+          <div class="props__seg-group">
+            <button
+              type="button"
+              class="props__seg-btn props__seg-btn--sm"
+              (click)="setRunPaddingX(run, 0); setRunPaddingY(run, 0)"
+              title="Reset padding to 0"
+            >
+              0px
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__seg-btn--sm"
+              (click)="setRunPaddingX(run, 4); setRunPaddingY(run, 2)"
+              title="Small padding"
+            >
+              Sm
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__seg-btn--sm"
+              (click)="setRunPaddingX(run, 8); setRunPaddingY(run, 4)"
+              title="Medium padding"
+            >
+              Md
+            </button>
+          </div>
+        </div>
+
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel" style="width: 64px;">Padding X</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="0"
+            max="40"
+            step="1"
+            [value]="getRunPaddingX(run)"
+            (input)="setRunPaddingX(run, $any($event.target).value)"
+            aria-label="Horizontal padding slider"
+          />
+          <input
+            class="pf-input props__input-size"
+            type="number"
+            min="0"
+            max="60"
+            [value]="getRunPaddingX(run)"
+            (input)="setRunPaddingX(run, $any($event.target).value)"
+            aria-label="Horizontal padding input"
+          />
+          <span class="props__value-badge">{{ getRunPaddingX(run) }}px</span>
+        </div>
+
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel" style="width: 64px;">Padding Y</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="0"
+            max="40"
+            step="1"
+            [value]="getRunPaddingY(run)"
+            (input)="setRunPaddingY(run, $any($event.target).value)"
+            aria-label="Vertical padding slider"
+          />
+          <input
+            class="pf-input props__input-size"
+            type="number"
+            min="0"
+            max="60"
+            [value]="getRunPaddingY(run)"
+            (input)="setRunPaddingY(run, $any($event.target).value)"
+            aria-label="Vertical padding input"
+          />
+          <span class="props__value-badge">{{ getRunPaddingY(run) }}px</span>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- MARGIN / POSITION OFFSET ADJUSTMENT -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Margin / Position Offset</label>
+          <button
+            type="button"
+            class="props__seg-btn props__seg-btn--sm"
+            (click)="resetRunOffsets()"
+            title="Reset offsets to (0, 0)"
+          >
+            <i class="fa-solid fa-arrows-to-dot"></i> Reset
+          </button>
+        </div>
+
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel" style="width: 64px;">Offset X</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="-50"
+            max="50"
+            step="1"
+            [value]="getRunMarginX(run)"
+            (input)="setRunMarginX(run, $any($event.target).value)"
+            aria-label="Offset X slider"
+          />
+          <input
+            class="pf-input props__input-size"
+            type="number"
+            min="-150"
+            max="150"
+            [value]="getRunMarginX(run)"
+            (input)="setRunMarginX(run, $any($event.target).value)"
+            aria-label="Offset X input"
+          />
+          <span class="props__value-badge">{{ getRunMarginX(run) }}px</span>
+        </div>
+
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel" style="width: 64px;">Offset Y</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="-50"
+            max="50"
+            step="1"
+            [value]="getRunMarginY(run)"
+            (input)="setRunMarginY(run, $any($event.target).value)"
+            aria-label="Offset Y slider"
+          />
+          <input
+            class="pf-input props__input-size"
+            type="number"
+            min="-150"
+            max="150"
+            [value]="getRunMarginY(run)"
+            (input)="setRunMarginY(run, $any($event.target).value)"
+            aria-label="Offset Y input"
+          />
+          <span class="props__value-badge">{{ getRunMarginY(run) }}px</span>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- ADVANCED FEATURES: OPACITY & DETAILS -->
+      <div class="props__group">
+        <label class="props__label">Advanced Adjustments</label>
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel" style="width: 64px;">Opacity</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="10"
+            max="100"
+            step="1"
+            [value]="getRunOpacity(run)"
+            (input)="setRunOpacity(run, $any($event.target).value)"
+            aria-label="Opacity slider"
+          />
+          <span class="props__value-badge">{{ getRunOpacity(run) }}%</span>
+        </div>
+
+        <div class="props__row props__row--between" style="margin-top: 4px;">
+          <span class="props__sublabel" style="width: auto; font-size: 10px; color: var(--pf-text-muted);">
+            Origin: ({{ run.boundingBox.x | number:'1.0-0' }}, {{ run.boundingBox.y | number:'1.0-0' }})
+          </span>
+          <button
+            type="button"
+            class="props__seg-btn props__seg-btn--sm"
+            (click)="resetRunStyling()"
+            title="Reset font size, spacing, offsets, and colors to PDF original"
+          >
+            <i class="fa-solid fa-arrow-rotate-left"></i> Reset All Styling
+          </button>
+        </div>
+      </div>
+    </app-panel-section>
+    }
+  } @else if (selected(); as ann) {
+    <app-panel-section [title]="titleOf(ann)" [icon]="iconOf(ann)">
+      <button
+        type="button"
+        class="props__delete"
+        [class.props__delete--active]="ann.locked"
+        (click)="toggleLock(ann, $event)"
+        [title]="ann.locked ? 'Unlock annotation' : 'Lock annotation'"
+        [attr.aria-label]="ann.locked ? 'Unlock annotation' : 'Lock annotation'"
+        psec-actions
+      >
+        <i [class]="ann.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open'"></i>
+      </button>
+      <button
+        type="button"
+        class="props__delete props__delete--ghost"
+        (click)="duplicate(ann)"
+        title="Duplicate annotation"
+        aria-label="Duplicate annotation"
+        psec-actions
+      >
+        <i class="fa-solid fa-copy"></i>
+      </button>
+      <button
+        type="button"
+        class="props__delete"
+        [disabled]="ann.locked"
+        (click)="delete(ann)"
+        title="Delete annotation"
+        aria-label="Delete annotation"
+        psec-actions
+      >
+        <i class="fa-solid fa-trash"></i>
+      </button>
+
+      <!-- GROUP STATUS (if grouped) -->
+      @if (ann.groupId) {
+        <div class="props__group">
+          <div class="props__row props__row--between">
+            <span class="props__sublabel"><i class="fa-solid fa-object-group"></i> Group</span>
+            <span class="props__value-badge">{{ ann.groupId }}</span>
+          </div>
+        </div>
+      }
+
+      @if (ann.type !== 'text') {
+        <div class="props__divider"></div>
+      }
+
+      <!-- TEXT CONTROLS -->
+      @if (ann.type === 'text') {
+        <div class="props__group">
+          <label class="props__label">Text</label>
+          <textarea
+            class="pf-input props__textarea"
+            rows="2"
+            [value]="ann.text"
+            [disabled]="ann.locked"
+            (input)="setText(ann, $any($event.target).value)"
+            placeholder="Type text…"
+            aria-label="Text content"
+          ></textarea>
+        </div>
+
+        <div class="props__group">
+          <label class="props__label">Typography</label>
+          <div class="props__row props__row--inline">
+            <select
+              class="pf-input props__select-font"
+              [value]="ann.fontFamily"
+              [disabled]="ann.locked"
+              (change)="setFontFamily(ann, $any($event.target).value)"
+              aria-label="Font family"
+            >
+              @for (opt of fontOptions; track opt.value) {
+                <option [value]="opt.value">{{ opt.label }}</option>
+              }
+            </select>
+            <input
+              class="pf-input props__input-size"
+              type="number"
+              min="4"
+              max="140"
+              step="any"
+              [value]="ann.fontSize"
+              [disabled]="ann.locked"
+              (input)="setFontSize(ann, $any($event.target).value)"
+              title="Font size"
+              aria-label="Font size"
+            />
+            <input
+              class="pf-color props__color-picker"
+              type="color"
+              [value]="ann.color"
+              [disabled]="ann.locked"
+              (input)="setColor(ann, $any($event.target).value)"
+              title="Text color"
+              aria-label="Text color"
+            />
+          </div>
+
+          <div class="props__row props__row--between">
+            <div class="props__seg-group">
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.fontWeight >= 700"
+                [disabled]="ann.locked"
+                (click)="toggleBold(ann)"
+                title="Bold"
+                aria-label="Bold"
+              >
+                <i class="fa-solid fa-bold"></i>
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.italic"
+                [disabled]="ann.locked"
+                (click)="toggleItalic(ann)"
+                title="Italic"
+                aria-label="Italic"
+              >
+                <i class="fa-solid fa-italic"></i>
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.underline"
+                [disabled]="ann.locked"
+                (click)="toggleUnderline(ann)"
+                title="Underline"
+                aria-label="Underline"
+              >
+                <i class="fa-solid fa-underline"></i>
+              </button>
+            </div>
+
+            <div class="props__seg-group">
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.align === 'left'"
+                [disabled]="ann.locked"
+                (click)="setAlign(ann, 'left')"
+                title="Align left"
+                aria-label="Align left"
+              >
+                <i class="fa-solid fa-align-left"></i>
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.align === 'center'"
+                [disabled]="ann.locked"
+                (click)="setAlign(ann, 'center')"
+                title="Align center"
+                aria-label="Align center"
+              >
+                <i class="fa-solid fa-align-center"></i>
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.align === 'right'"
+                [disabled]="ann.locked"
+                (click)="setAlign(ann, 'right')"
+                title="Align right"
+                aria-label="Align right"
+              >
+                <i class="fa-solid fa-align-right"></i>
+              </button>
+            </div>
+
+            <div class="props__seg-group">
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.transform === 'uppercase'"
+                [disabled]="ann.locked"
+                (click)="setTransform(ann, 'uppercase')"
+                title="Uppercase (AA)"
+                aria-label="Uppercase"
+              >
+                AA
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.transform === 'lowercase'"
+                [disabled]="ann.locked"
+                (click)="setTransform(ann, 'lowercase')"
+                title="Lowercase (aa)"
+                aria-label="Lowercase"
+              >
+                aa
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="ann.transform === 'capitalize'"
+                [disabled]="ann.locked"
+                (click)="setTransform(ann, 'capitalize')"
+                title="Capitalize (Aa)"
+                aria-label="Capitalize"
+              >
+                Aa
+              </button>
+            </div>
+          </div>
+
+          <div class="props__row props__row--inline">
+            <span class="props__sublabel">Spacing</span>
+            <input
+              class="pf-input props__field--grow"
+              type="range"
+              min="1"
+              max="2.5"
+              step="0.1"
+              [value]="ann.lineHeight ?? 1.35"
+              [disabled]="ann.locked"
+              (input)="setLineHeight(ann, $any($event.target).value)"
+              title="Line height"
+              aria-label="Line height"
+            />
+            <span class="props__value-badge">{{ (ann.lineHeight ?? 1.35) | number: '1.1-1' }}x</span>
+            <input
+              class="pf-input props__input-size"
+              type="number"
+              min="-2"
+              max="20"
+              [value]="ann.letterSpacing ?? 0"
+              [disabled]="ann.locked"
+              (input)="setLetterSpacing(ann, $any($event.target).value)"
+              title="Letter spacing in pixels"
+              placeholder="0px"
+              aria-label="Letter spacing"
+            />
+          </div>
+        </div>
+
+        <div class="props__group">
+          <div class="props__row props__row--between">
+            <label class="props__label">Highlight Fill</label>
+            <div class="props__seg-group">
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="hasTextBackground(ann)"
+                [disabled]="ann.locked"
+                (click)="setTextBackgroundEnabled(ann, true)"
+                title="Enable text background"
+              >
+                <i class="fa-solid fa-fill"></i> On
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="!hasTextBackground(ann)"
+                [disabled]="ann.locked"
+                (click)="setTextBackgroundEnabled(ann, false)"
+                title="Disable text background"
+              >
+                <i class="fa-solid fa-ban"></i> None
+              </button>
+            </div>
+          </div>
+
+          @if (hasTextBackground(ann)) {
+            <div class="props__swatches">
+              @for (s of highlightSwatches; track s.value) {
+                <button
+                  type="button"
+                  class="props__swatch"
+                  [class.props__swatch--on]="ann.backgroundColor === s.value"
+                  [style.background]="s.value"
+                  [title]="s.label"
+                  [disabled]="ann.locked"
+                  [attr.aria-label]="'Set background to ' + s.label"
+                  (click)="setTextBackground(ann, s.value)"
+                ></button>
+              }
+              <input
+                class="pf-color props__swatch-input"
+                type="color"
+                [value]="toColor(ann.backgroundColor || '#fef08a')"
+                [disabled]="ann.locked"
+                (input)="setTextBackground(ann, $any($event.target).value)"
+                title="Custom background color"
+                aria-label="Custom background color"
+              />
+            </div>
+            <div class="props__row props__row--inline">
+              <span class="props__sublabel">Padding</span>
+              <input
+                class="pf-input props__field--grow"
+                type="range"
+                min="0"
+                max="24"
+                step="1"
+                [value]="ann.backgroundPadding ?? 6"
+                [disabled]="ann.locked"
+                (input)="setTextBackgroundPadding(ann, $any($event.target).value)"
+                aria-label="Text background padding"
+              />
+              <span class="props__value-badge">{{ ann.backgroundPadding ?? 6 }}px</span>
+            </div>
+          }
+        </div>
+
+        <!-- POSITION & MARGIN / OFFSET FOR TEXT ANNOTATION -->
+        <div class="props__group">
+          <label class="props__label">Position & Margin</label>
+          <div class="props__row props__row--inline">
+            <span class="props__sublabel">Pos X</span>
+            <input
+              class="pf-input props__input-size props__field--grow"
+              type="number"
+              [value]="ann.rect.x"
+              [disabled]="ann.locked"
+              (input)="setRectX(ann, +$any($event.target).value)"
+              title="Position X"
+              aria-label="Position X"
+            />
+            <span class="props__sublabel">Pos Y</span>
+            <input
+              class="pf-input props__input-size props__field--grow"
+              type="number"
+              [value]="ann.rect.y"
+              [disabled]="ann.locked"
+              (input)="setRectY(ann, +$any($event.target).value)"
+              title="Position Y"
+              aria-label="Position Y"
+            />
+          </div>
+        </div>
+
+        <!-- OPACITY FOR TEXT ANNOTATION -->
+        <div class="props__group">
+          <div class="props__row props__row--inline">
+            <span class="props__sublabel">Opacity</span>
+            <input
+              class="pf-input props__field--grow"
+              type="range"
+              min="10"
+              max="100"
+              step="1"
+              [value]="getOpacityPercent(ann)"
+              [disabled]="ann.locked"
+              (input)="setOpacityPercent(ann, $any($event.target).value)"
+              aria-label="Text opacity"
+            />
+            <span class="props__value-badge">{{ getOpacityPercent(ann) }}%</span>
+          </div>
+        </div>
+      }
+
+      <!-- SHAPE & ICON CONTROLS -->
+      @if (ann.type === 'shape') {
+        <div class="props__group">
+          @if (ann.renderMode === 'icon') {
+            <div class="props__row props__row--between">
+              <label class="props__label">Icon: {{ iconLabelOf(ann.kind) }}</label>
+            </div>
+            <div class="props__shape-tabs">
+              <button
+                type="button"
+                class="props__shape-tab"
+                [class.props__shape-tab--active]="propsIconCategory() === 'all'"
+                (click)="propsIconCategory.set('all')"
+                title="All Icons"
+              >
+                All ({{ iconDefinitions.length }})
+              </button>
+              @for (cat of iconCategories; track cat.id) {
+                <button
+                  type="button"
+                  class="props__shape-tab"
+                  [class.props__shape-tab--active]="propsIconCategory() === cat.id"
+                  (click)="propsIconCategory.set(cat.id)"
+                  [title]="cat.label"
+                >
+                  <i [class]="cat.icon"></i> {{ cat.label }}
+                </button>
+              }
+            </div>
+            <div class="props__shape-grid" (wheel)="onHorizontalWheel($event)">
+              @for (s of propsFilteredIcons(); track s.id) {
+                <button
+                  type="button"
+                  class="props__shape-btn"
+                  [class.props__shape-btn--active]="ann.kind === s.id"
+                  (click)="setIconKind(ann, s.id)"
+                  [title]="s.label"
+                >
+                  <i [class]="s.icon"></i>
+                  <span>{{ s.label }}</span>
+                </button>
+              }
+            </div>
+
+            <!-- ICON STYLE TYPE SELECTOR -->
+            <div class="props__divider"></div>
+            <div class="props__row props__row--between">
+              <label class="props__label">Icon Style</label>
+              <span class="props__hint-inline">{{ iconStyleOf(ann) }}</span>
+            </div>
+            <div class="props__seg-group props__seg-group--full props__icon-style-grid">
+              @for (opt of iconStyleOptions; track opt.id) {
+                <button
+                  type="button"
+                  class="props__seg-btn"
+                  [class.props__seg-btn--on]="iconStyleOf(ann) === opt.id"
+                  (click)="setAnnotationIconStyle(ann, opt.id)"
+                  [title]="opt.description"
+                  [attr.aria-label]="opt.label"
+                >
+                  <i [class]="opt.icon"></i>
+                  <span>{{ opt.label }}</span>
+                </button>
+              }
+            </div>
+          } @else {
+            <div class="props__row props__row--between">
+              <label class="props__label">Shape: {{ shapeLabelOf(ann.kind) }}</label>
+            </div>
+            <div class="props__shape-tabs">
+              <button
+                type="button"
+                class="props__shape-tab"
+                [class.props__shape-tab--active]="propsShapeCategory() === 'all'"
+                (click)="propsShapeCategory.set('all')"
+                title="All Shapes"
+              >
+                All ({{ shapeDefinitions.length }})
+              </button>
+              @for (cat of shapeCategories; track cat.id) {
+                <button
+                  type="button"
+                  class="props__shape-tab"
+                  [class.props__shape-tab--active]="propsShapeCategory() === cat.id"
+                  (click)="propsShapeCategory.set(cat.id)"
+                  [title]="cat.label"
+                >
+                  <i [class]="cat.icon"></i> {{ cat.label }}
+                </button>
+              }
+            </div>
+            <div class="props__shape-grid" (wheel)="onHorizontalWheel($event)">
+              @for (s of propsFilteredShapes(); track s.id) {
+                <button
+                  type="button"
+                  class="props__shape-btn"
+                  [class.props__shape-btn--active]="ann.kind === s.id"
+                  (click)="setShapeKind(ann, s.id)"
+                  [title]="s.label"
+                >
+                  <i [class]="s.icon"></i>
+                  <span>{{ s.label }}</span>
+                </button>
+              }
+            </div>
+          }
+        </div>
+
+        <div class="props__group">
+          <label class="props__label">Stroke</label>
+          <div class="props__row props__row--inline">
+            <div class="props__swatches">
+              @for (s of shapeSwatches; track s.value) {
+                <button
+                  type="button"
+                  class="props__swatch"
+                  [class.props__swatch--on]="ann.strokeColor === s.value"
+                  [style.background]="s.value"
+                  [title]="s.label"
+                  [attr.aria-label]="'Set stroke to ' + s.label"
+                  (click)="setStroke(ann, s.value)"
+                ></button>
+              }
+              <input
+                class="pf-color props__swatch-input"
+                type="color"
+                [value]="toColor(ann.strokeColor)"
+                (input)="setStroke(ann, $any($event.target).value)"
+                title="Custom stroke color"
+                aria-label="Stroke color"
+              />
+            </div>
+          </div>
+
+          <div class="props__row props__row--inline">
+            <span class="props__sublabel">Width</span>
+            <input
+              class="pf-input props__field--grow"
+              type="range"
+              min="1"
+              max="24"
+              [value]="ann.strokeWidth"
+              (input)="setStrokeWidth(ann, $any($event.target).value)"
+              aria-label="Stroke width slider"
+            />
+            <span class="props__value-badge">{{ ann.strokeWidth }}px</span>
+          </div>
+
+          @if (canStrokeStyle()) {
+            <div class="props__row props__row--inline">
+              <span class="props__sublabel">Style</span>
+              <div class="props__seg-group props__field--grow">
+                @for (s of strokeStyles; track s.value) {
+                  <button
+                    type="button"
+                    class="props__seg-btn props__field--grow"
+                    [class.props__seg-btn--on]="strokeStyleOf(ann) === s.value"
+                    (click)="setStrokeStyle(ann, s.value)"
+                  >
+                    {{ s.label }}
+                  </button>
+                }
+              </div>
+            </div>
+          }
+        </div>
+
+        @if (canFill()) {
+          <div class="props__group">
+            <div class="props__row props__row--between">
+              <label class="props__label">Fill</label>
+              <div class="props__seg-group">
+                <button
+                  type="button"
+                  class="props__seg-btn"
+                  [class.props__seg-btn--on]="hasFill()"
+                  (click)="setFillEnabled(ann, true)"
+                  title="Enable fill"
+                >
+                  <i class="fa-solid fa-fill"></i> On
+                </button>
+                <button
+                  type="button"
+                  class="props__seg-btn"
+                  [class.props__seg-btn--on]="!hasFill()"
+                  (click)="setFillEnabled(ann, false)"
+                  title="Disable fill"
+                >
+                  <i class="fa-solid fa-ban"></i> None
+                </button>
+              </div>
+            </div>
+
+            @if (hasFill()) {
+              <div class="props__swatches">
+                @for (s of shapeSwatches; track s.value) {
+                  <button
+                    type="button"
+                    class="props__swatch"
+                    [class.props__swatch--on]="ann.fillColor === s.value"
+                    [style.background]="s.value"
+                    [title]="s.label"
+                    [attr.aria-label]="'Set fill to ' + s.label"
+                    (click)="setFill(ann, s.value)"
+                  ></button>
+                }
+                <input
+                  class="pf-color props__swatch-input"
+                  type="color"
+                  [value]="toColor(ann.fillColor)"
+                  (input)="setFill(ann, $any($event.target).value)"
+                  title="Custom fill color"
+                  aria-label="Fill color"
+                />
+              </div>
+            }
+          </div>
+        }
+      }
+
+      <!-- DRAWING CONTROLS -->
+      @if (ann.type === 'drawing') {
+        <div class="props__group">
+          <label class="props__label">Stroke</label>
+          <div class="props__row props__row--inline">
+            <div class="props__swatches">
+              @for (s of shapeSwatches; track s.value) {
+                <button
+                  type="button"
+                  class="props__swatch"
+                  [class.props__swatch--on]="ann.color === s.value"
+                  [style.background]="s.value"
+                  [title]="s.label"
+                  [disabled]="ann.locked"
+                  [attr.aria-label]="'Set stroke to ' + s.label"
+                  (click)="setDrawingColor(ann, s.value)"
+                ></button>
+              }
+              <input
+                class="pf-color props__swatch-input"
+                type="color"
+                [value]="toColor(ann.color)"
+                [disabled]="ann.locked"
+                (input)="setDrawingColor(ann, $any($event.target).value)"
+                title="Custom stroke color"
+                aria-label="Stroke color"
+              />
+            </div>
+          </div>
+
+          <div class="props__row props__row--inline">
+            <span class="props__sublabel">Width</span>
+            <input
+              class="pf-input props__field--grow"
+              type="range"
+              min="1"
+              max="32"
+              [value]="ann.strokeWidth"
+              [disabled]="ann.locked"
+              (input)="setDrawingStrokeWidth(ann, $any($event.target).value)"
+              aria-label="Stroke width slider"
+            />
+            <span class="props__value-badge">{{ ann.strokeWidth }}px</span>
+          </div>
+        </div>
+      }
+
+      <!-- HIGHLIGHT / UNDERLINE / STRIKETHROUGH -->
+      @if (
+        ann.type === 'highlight' ||
+        ann.type === 'underline' ||
+        ann.type === 'strikethrough'
+      ) {
+        <div class="props__group">
+          <label class="props__label">Color</label>
+          <div class="props__swatches">
+            @for (s of highlightSwatches; track s.value) {
+              <button
+                type="button"
+                class="props__swatch"
+                [class.props__swatch--on]="ann.color === s.value"
+                [style.background]="s.value"
+                [title]="s.label"
+                [attr.aria-label]="'Set color to ' + s.label"
+                (click)="setHighlightColor(ann, s.value)"
+              ></button>
+            }
+            <input
+              class="pf-color props__swatch-input"
+              type="color"
+              [value]="ann.color"
+              (input)="setHighlightColor(ann, $any($event.target).value)"
+              title="Custom color"
+              aria-label="Custom color"
+            />
+          </div>
+        </div>
+      }
+
+      <!-- COMMENT -->
+      @if (ann.type === 'comment') {
+        <div class="props__group">
+          <label class="props__label">Comment</label>
+          <textarea
+            class="pf-input props__textarea"
+            rows="3"
+            [value]="ann.text"
+            (input)="setComment(ann, $any($event.target).value)"
+            placeholder="Comment text…"
+            aria-label="Comment text"
+          ></textarea>
+        </div>
+      }
+
+      <!-- IMAGE CONTROLS -->
+      @if (ann.type === 'image') {
+        <div class="props__group">
+          <label class="props__label">Image Preview</label>
+          <div class="props__media-preview">
+            <img [src]="ann.dataUrl" class="props__media-thumb" alt="Selected Image" />
+          </div>
+        </div>
+
+        <!-- LAYER BLENDING MODES -->
+        <div class="props__group">
+          <div class="props__row props__row--between">
+            <label class="props__label">Layer Blending</label>
+            <span class="props__hint-inline">{{ ann.blendMode || 'normal' }}</span>
+          </div>
+          <div class="props__seg-group props__seg-group--full" style="margin-bottom: 6px;">
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="!ann.blendMode || ann.blendMode === 'normal'"
+              [disabled]="ann.locked"
+              (click)="setBlendMode(ann, 'normal')"
+              title="Normal standard rendering"
+            >
+              Normal
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="ann.blendMode === 'multiply'"
+              [disabled]="ann.locked"
+              (click)="setBlendMode(ann, 'multiply')"
+              title="Multiply: blends ink on paper, removes white background"
+            >
+              Multiply
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="ann.blendMode === 'screen'"
+              [disabled]="ann.locked"
+              (click)="setBlendMode(ann, 'screen')"
+              title="Screen: lightens and removes dark backgrounds"
+            >
+              Screen
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="ann.blendMode === 'overlay'"
+              [disabled]="ann.locked"
+              (click)="setBlendMode(ann, 'overlay')"
+              title="Overlay: high contrast composite blend"
+            >
+              Overlay
+            </button>
+          </div>
+          <div class="props__row props__row--inline">
+            <span class="props__sublabel">All Modes</span>
+            <select
+              class="pf-input props__field--grow"
+              [value]="ann.blendMode || 'normal'"
+              [disabled]="ann.locked"
+              (change)="setBlendMode(ann, $any($event.target).value)"
+            >
+              @for (bm of blendModes; track bm.value) {
+                <option [value]="bm.value">{{ bm.label }} ({{ bm.description }})</option>
+              }
+            </select>
+          </div>
+        </div>
+
+        <!-- DRAG & RESIZE RATIO MODES -->
+        <div class="props__group">
+          <label class="props__label">Drag & Resize Ratio</label>
+          <div class="props__seg-group props__seg-group--full" style="margin-bottom: 6px;">
+            @for (opt of aspectRatioOptions; track opt.value) {
+              <button
+                type="button"
+                class="props__seg-btn props__field--grow"
+                [class.props__seg-btn--on]="(ann.aspectRatioMode || 'original') === opt.value"
+                [disabled]="ann.locked"
+                (click)="setAspectRatioMode(ann, opt.value)"
+                [title]="opt.title"
+              >
+                {{ opt.label }}
+              </button>
+            }
+          </div>
+
+          <div class="props__row props__row--between" style="gap: 6px; margin-top: 4px;">
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="ann.flipHorizontal"
+              [disabled]="ann.locked"
+              (click)="toggleFlipHorizontal(ann)"
+              title="Flip Horizontally"
+            >
+              <i class="fa-solid fa-arrows-left-right"></i> Flip H
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="ann.flipVertical"
+              [disabled]="ann.locked"
+              (click)="toggleFlipVertical(ann)"
+              title="Flip Vertically"
+            >
+              <i class="fa-solid fa-arrows-up-down"></i> Flip V
+            </button>
+          </div>
+        </div>
+      }
+
+      <!-- SIGNATURE CONTROLS -->
+      @if (ann.type === 'signature') {
+        <div class="props__group">
+          <label class="props__label">Signature Preview</label>
+          <div class="props__media-preview props__media-preview--sig">
+            <img [src]="ann.dataUrl" class="props__media-thumb" alt="Selected Signature" />
+          </div>
+        </div>
+
+        <!-- SIGNATURE BLEND MODE -->
+        <div class="props__group">
+          <div class="props__row props__row--between">
+            <label class="props__label">Layer Blending</label>
+            <span class="props__hint-inline">{{ ann.blendMode || 'normal' }}</span>
+          </div>
+          <div class="props__seg-group props__seg-group--full">
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="!ann.blendMode || ann.blendMode === 'normal'"
+              [disabled]="ann.locked"
+              (click)="setBlendMode(ann, 'normal')"
+            >
+              Normal
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="ann.blendMode === 'multiply'"
+              [disabled]="ann.locked"
+              (click)="setBlendMode(ann, 'multiply')"
+              title="Multiply: blends signature ink into document"
+            >
+              Multiply
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="ann.blendMode === 'overlay'"
+              [disabled]="ann.locked"
+              (click)="setBlendMode(ann, 'overlay')"
+            >
+              Overlay
+            </button>
+          </div>
+        </div>
+      }
+
+      <!-- STAMP CONTROLS -->
+      @if (ann.type === 'stamp') {
+        <div class="props__group">
+          <label class="props__label">Stamp Text</label>
+          <input
+            class="pf-input"
+            type="text"
+            [value]="ann.text"
+            [disabled]="ann.locked"
+            (input)="setStampText(ann, $any($event.target).value)"
+            placeholder="Stamp Text"
+            aria-label="Stamp Text"
+          />
+        </div>
+
+        <div class="props__group">
+          <label class="props__label">Quick Presets</label>
+          <div class="props__stamp-presets">
+            @for (pst of stampTextPresets; track pst) {
+              <button
+                type="button"
+                class="props__stamp-pill"
+                [class.props__stamp-pill--active]="ann.text === pst"
+                [disabled]="ann.locked"
+                (click)="applyStampPreset(ann, pst)"
+              >
+                {{ pst }}
+              </button>
+            }
+          </div>
+        </div>
+
+        <div class="props__group">
+          <label class="props__label">Stamp Color</label>
+          <div class="props__swatches">
+            @for (c of stampColorPresets; track c) {
+              <button
+                type="button"
+                class="props__swatch"
+                [class.props__swatch--on]="ann.color === c"
+                [style.background]="c"
+                [disabled]="ann.locked"
+                (click)="setStampColor(ann, c)"
+              ></button>
+            }
+            <input
+              class="pf-color props__swatch-input"
+              type="color"
+              [value]="toColor(ann.color)"
+              [disabled]="ann.locked"
+              (input)="setStampColor(ann, $any($event.target).value)"
+              title="Custom stamp color"
+              aria-label="Stamp color"
+            />
+          </div>
+        </div>
+      }
+
+      <div class="props__divider"></div>
+
+      <!-- COMMON: OPACITY & ROTATION -->
+      <div class="props__group">
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel">Opacity</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            [value]="getOpacityPercent(ann)"
+            (input)="setOpacityPercent(ann, $any($event.target).value)"
+            aria-label="Opacity slider"
+          />
+          <span class="props__value-badge">{{ getOpacityPercent(ann) }}%</span>
+        </div>
+
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel">Rotate</span>
+          <div class="props__seg-group props__field--grow">
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              (click)="rotateNeg90(ann)"
+              title="Rotate 90° counter-clockwise"
+              aria-label="Rotate 90° counter-clockwise"
+            >
+              <i class="fa-solid fa-rotate-left"></i> -90°
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              (click)="rotate90(ann)"
+              title="Rotate 90° clockwise"
+              aria-label="Rotate 90° clockwise"
+            >
+              <i class="fa-solid fa-rotate-right"></i> +90°
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn"
+              (click)="resetRotation(ann)"
+              title="Reset rotation to 0°"
+              aria-label="Reset rotation"
+              [disabled]="ann.rotation === 0"
+            >
+              <i class="fa-solid fa-arrow-rotate-backward"></i>
+            </button>
+          </div>
+          @if (ann.rotation !== 0) {
+            <span class="props__value-badge">{{ ann.rotation }}°</span>
+          }
+        </div>
+      </div>
+
+      <!-- COMMON: DRAG RESIZE RATIO -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Resize Ratio</label>
+          <span class="props__hint-inline">{{ resizeModeLabel(resizeModeOf(ann)) }}</span>
+        </div>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="resizeModeOf(ann) === 'fixed'"
+            (click)="setAnnotationResizeMode(ann, 'fixed')"
+            title="Fixed 1:1 Aspect Ratio when dragging border handles"
+            aria-label="Fixed 1:1 Ratio"
+          >
+            <i class="fa-solid fa-square"></i> Fixed 1:1
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="resizeModeOf(ann) === 'item'"
+            (click)="setAnnotationResizeMode(ann, 'item')"
+            title="Fixed ratio of the item when dragging border handles"
+            aria-label="Fixed Item Ratio"
+          >
+            <i class="fa-solid fa-lock"></i> Item Ratio
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="resizeModeOf(ann) === 'free'"
+            (click)="setAnnotationResizeMode(ann, 'free')"
+            title="Free Hand resizing when dragging border handles"
+            aria-label="Free Hand"
+          >
+            <i class="fa-solid fa-arrows-up-down-left-right"></i> Free Hand
+          </button>
+        </div>
+      </div>
+
+      <!-- COMMON: ARRANGE / ORDER -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <span class="props__sublabel">Layer</span>
+          <span class="props__hint-inline">
+            {{ selectionIndex() + 1 }} of {{ selectionTotal() }}
+          </span>
+        </div>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="sendToBack(ann)"
+            [disabled]="!canSendBackward()"
+            title="Send to back"
+            aria-label="Send to back"
+          >
+            <i class="fa-solid fa-backward-step"></i> Back
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="sendBackward(ann)"
+            [disabled]="!canSendBackward()"
+            title="Send backward"
+            aria-label="Send backward"
+          >
+            <i class="fa-solid fa-chevron-down"></i> Down
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="bringForward(ann)"
+            [disabled]="!canBringForward()"
+            title="Bring forward"
+            aria-label="Bring forward"
+          >
+            <i class="fa-solid fa-chevron-up"></i> Up
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            (click)="bringToFront(ann)"
+            [disabled]="!canBringForward()"
+            title="Bring to front"
+            aria-label="Bring to front"
+          >
+            <i class="fa-solid fa-forward-step"></i> Front
+          </button>
+        </div>
+      </div>
+    </app-panel-section>
+  } @else if (activeTool() === 'eraser') {
+    <app-panel-section title="Eraser Options" icon="fa-solid fa-eraser">
+      <div class="props__group">
+        <label class="props__label">Erase Mode</label>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="eraserMode() === 'stroke'"
+            (click)="setEraserMode('stroke')"
+            title="Erase entire strokes / objects when touched"
+          >
+            <i class="fa-solid fa-wand-magic-sparkles"></i> Stroke
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="eraserMode() === 'segment'"
+            (click)="setEraserMode('segment')"
+            title="Cut and erase only the touched segment"
+          >
+            <i class="fa-solid fa-scissors"></i> Precision
+          </button>
+        </div>
+      </div>
+
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Eraser Size</label>
+          <span class="props__value-badge">{{ eraserSize() | number: '1.0-1' }}px</span>
+        </div>
+
+        <div class="props__row props__row--inline">
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="8"
+            max="72"
+            step="1"
+            [value]="eraserSize()"
+            (input)="setEraserSize($any($event.target).value)"
+            (pointerdown)="onEraserSliderStart()"
+            (pointerup)="onEraserSliderEnd()"
+            (focus)="onEraserSliderStart()"
+            (blur)="onEraserSliderEnd()"
+            aria-label="Eraser size slider"
+          />
+          <input
+            class="pf-input props__input-size"
+            type="number"
+            min="8"
+            max="72"
+            step="1"
+            [value]="eraserSize()"
+            (input)="setEraserSize($any($event.target).value)"
+            (focus)="onEraserSliderStart()"
+            (blur)="onEraserSliderEnd()"
+            title="Eraser size in pixels (8 - 72px)"
+            aria-label="Eraser size"
+          />
+        </div>
+      </div>
+
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Cut Sensitivity</label>
+          <span class="props__value-badge">{{ (eraserTolerance() * 100) | number: '1.0-0' }}%</span>
+        </div>
+
+        <div class="props__row props__row--inline">
+          <span class="props__sublabel">Tight</span>
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="0.5"
+            max="1.5"
+            step="0.05"
+            [value]="eraserTolerance()"
+            (input)="setEraserTolerance($any($event.target).value)"
+            (pointerdown)="onEraserSliderStart()"
+            (pointerup)="onEraserSliderEnd()"
+            (focus)="onEraserSliderStart()"
+            (blur)="onEraserSliderEnd()"
+            aria-label="Eraser cut sensitivity slider"
+          />
+          <span class="props__sublabel" style="text-align: right;">Broad</span>
+        </div>
+      </div>
+
+      <div class="props__group">
+        <label class="props__label">Erase Target</label>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="eraserTarget() === 'all'"
+            (click)="setEraserTarget('all')"
+            title="Erase all drawings, shapes, and highlights"
+          >
+            All
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="eraserTarget() === 'drawing'"
+            (click)="setEraserTarget('drawing')"
+            title="Erase pen and freehand drawings only"
+          >
+            Ink Only
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="eraserTarget() === 'highlight'"
+            (click)="setEraserTarget('highlight')"
+            title="Erase highlights only"
+          >
+            Highlights
+          </button>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <div class="props__group">
+        <label class="props__label">Quick Actions</label>
+        <button
+          type="button"
+          class="props__seg-btn props__seg-btn--danger props__seg-group--full"
+          (click)="clearCurrentPage()"
+          title="Clear all unlocked annotations on the current page"
+        >
+          <i class="fa-solid fa-trash-can"></i> Clear Page Marks
+        </button>
+      </div>
+    </app-panel-section>
+  } @else if (activeTool() === 'pen' || activeTool() === 'freehand') {
+    <app-panel-section
+      [title]="activeTool() === 'freehand' ? 'Freehand Marker' : 'Pen Options'"
+      [icon]="activeTool() === 'freehand' ? 'fa-solid fa-pen-ruler' : 'fa-solid fa-pen'"
+    >
+      <!-- DRAWING MODE -->
+      <div class="props__group">
+        <label class="props__label">Drawing Mode</label>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="drawingMode() === 'continuous'"
+            (click)="setDrawingMode('continuous')"
+            title="Natural Inking: Draw continuously without border/selection interruptions"
+          >
+            <i class="fa-solid fa-pen-nib"></i> Natural Ink
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="drawingMode() === 'autoselect'"
+            (click)="setDrawingMode('autoselect')"
+            title="Auto-Select: Show bounding box and handles on release"
+          >
+            <i class="fa-solid fa-crop-simple"></i> Auto-Select
+          </button>
+        </div>
+        <p class="props__hint" style="font-size: 11px; margin-top: 4px; color: var(--pf-text-muted);">
+          @if (drawingMode() === 'continuous') {
+            <span><i class="fa-solid fa-feather"></i> Draw and write freely. No bounding box interrupts your flow.</span>
+          } @else {
+            <span><i class="fa-solid fa-crop-simple"></i> Shows bounding box and handles immediately after each stroke to resize.</span>
+          }
+        </p>
+      </div>
+
+      <!-- STROKE WIDTH -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Stroke Thickness</label>
+          <span class="props__value-badge">
+            {{ (activeTool() === 'freehand' ? freehandStrokeWidth() : penStrokeWidth()) }}px
+          </span>
+        </div>
+        <div class="props__row props__row--inline">
+          <input
+            class="pf-input props__field--grow"
+            type="range"
+            min="1"
+            max="24"
+            step="1"
+            [value]="activeTool() === 'freehand' ? freehandStrokeWidth() : penStrokeWidth()"
+            (input)="activeTool() === 'freehand' ? setFreehandStrokeWidth($any($event.target).value) : setPenStrokeWidth($any($event.target).value)"
+            aria-label="Stroke width slider"
+          />
+          <input
+            class="pf-input props__input-size"
+            type="number"
+            min="1"
+            max="24"
+            step="1"
+            [value]="activeTool() === 'freehand' ? freehandStrokeWidth() : penStrokeWidth()"
+            (input)="activeTool() === 'freehand' ? setFreehandStrokeWidth($any($event.target).value) : setPenStrokeWidth($any($event.target).value)"
+            aria-label="Stroke width"
+          />
+        </div>
+      </div>
+
+      <!-- INK COLOR -->
+      <div class="props__group">
+        <label class="props__label">Ink Color</label>
+        <div class="props__swatches">
+          @for (c of shapeSwatches; track c.value) {
+            <button
+              type="button"
+              class="props__swatch"
+              [class.props__swatch--active]="(activeTool() === 'freehand' ? freehandColor() : penColor()) === c.value"
+              [style.background-color]="c.value"
+              [title]="c.label"
+              (click)="activeTool() === 'freehand' ? setFreehandColor(c.value) : setPenColor(c.value)"
+              [attr.aria-label]="'Set color ' + c.label"
+            ></button>
+          }
+          <label class="props__color-picker" title="Custom color">
+            <input
+              type="color"
+              [value]="activeTool() === 'freehand' ? freehandColor() : penColor()"
+              (input)="activeTool() === 'freehand' ? setFreehandColor($any($event.target).value) : setPenColor($any($event.target).value)"
+              aria-label="Custom ink color"
+            />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+        </div>
+      </div>
+
+      <!-- SMOOTHING -->
+      <div class="props__group">
+        <label class="props__label">Curve Smoothing</label>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="penSmoothing() === 'none'"
+            (click)="setPenSmoothing('none')"
+            title="Raw / Precision"
+          >
+            Raw
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="penSmoothing() === 'medium'"
+            (click)="setPenSmoothing('medium')"
+            title="Smooth Curve"
+          >
+            Smooth
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="penSmoothing() === 'high'"
+            (click)="setPenSmoothing('high')"
+            title="High Smoothing"
+          >
+            High
+          </button>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- QUICK AREA ADJUSTMENT ACTION -->
+      <div class="props__group">
+        <button
+          type="button"
+          class="props__seg-btn props__seg-group--full"
+          (click)="selectInkArea()"
+          title="Select drawn strokes to resize or move whole area"
+        >
+          <i class="fa-solid fa-arrows-up-down-left-right"></i> Select Ink to Adjust / Resize
+        </button>
+      </div>
+    </app-panel-section>
+  } @else if (activeTool() === 'shape' || activeTool() === 'rectangle' || activeTool() === 'circle' || activeTool() === 'arrow' || activeTool() === 'line') {
+    <!-- Shape Tool Configuration Section -->
+    <app-panel-section title="Shape Tool" icon="fa-solid fa-shapes">
+      <!-- Active Shape Summary -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Shape: {{ shapeLabelOf(shapeKind()) }}</label>
+        </div>
+
+        <!-- Shape Categories Tabs (All first) -->
+        <div class="props__shape-tabs">
+          <button
+            type="button"
+            class="props__shape-tab"
+            [class.props__shape-tab--active]="propsShapeCategory() === 'all'"
+            (click)="propsShapeCategory.set('all')"
+            title="All Shapes"
+          >
+            All ({{ shapeDefinitions.length }})
+          </button>
+          @for (cat of shapeCategories; track cat.id) {
+            <button
+              type="button"
+              class="props__shape-tab"
+              [class.props__shape-tab--active]="propsShapeCategory() === cat.id"
+              (click)="propsShapeCategory.set(cat.id)"
+              [title]="cat.label"
+            >
+              <i [class]="cat.icon"></i> {{ cat.label }}
+            </button>
+          }
+        </div>
+
+        <!-- Shape Grid -->
+        <div class="props__shape-grid" (wheel)="onHorizontalWheel($event)">
+          @for (s of propsFilteredShapes(); track s.id) {
+            <button
+              type="button"
+              class="props__shape-btn"
+              [class.props__shape-btn--active]="shapeKind() === s.id"
+              (click)="setToolShapeKind(s.id)"
+              [title]="s.label"
+            >
+              <i [class]="s.icon"></i>
+              <span>{{ s.label }}</span>
+            </button>
+          }
+        </div>
+      </div>
+
+      <!-- RESIZE RATIO DEFAULT -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Resize Ratio</label>
+          <span class="props__hint-inline">{{ resizeModeLabel(state.resizeMode()) }}</span>
+        </div>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="state.resizeMode() === 'fixed'"
+            (click)="state.setResizeMode('fixed')"
+            title="Fixed 1:1 Aspect Ratio when dragging border handles"
+            aria-label="Fixed 1:1 Ratio"
+          >
+            <i class="fa-solid fa-square"></i> Fixed 1:1
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="state.resizeMode() === 'item'"
+            (click)="state.setResizeMode('item')"
+            title="Fixed ratio of the item when dragging border handles"
+            aria-label="Fixed Item Ratio"
+          >
+            <i class="fa-solid fa-lock"></i> Item Ratio
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="state.resizeMode() === 'free'"
+            (click)="state.setResizeMode('free')"
+            title="Free Hand resizing when dragging border handles"
+            aria-label="Free Hand"
+          >
+            <i class="fa-solid fa-arrows-up-down-left-right"></i> Free Hand
+          </button>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- FILL SETTINGS -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Fill</label>
+          <button
+            type="button"
+            class="props__seg-btn props__seg-btn--sm"
+            [class.props__seg-btn--on]="shapeFillEnabled()"
+            (click)="toggleToolShapeFill()"
+          >
+            <i class="fa-solid fa-fill-drip"></i>
+            {{ shapeFillEnabled() ? 'Enabled' : 'None' }}
+          </button>
+        </div>
+
+        @if (shapeFillEnabled()) {
+          <div class="props__swatches">
+            @for (sw of shapeSwatches; track sw.value) {
+              <button
+                type="button"
+                class="props__swatch"
+                [class.props__swatch--active]="shapeFillColor() === sw.value"
+                [style.background-color]="sw.value"
+                (click)="setToolFillColor(sw.value)"
+                [title]="sw.label"
+              ></button>
+            }
+            <label class="props__custom-color-btn" title="Custom fill color">
+              <input
+                type="color"
+                [value]="shapeFillColor()"
+                (input)="setToolFillColor($any($event.target).value)"
+              />
+              <i class="fa-solid fa-eye-dropper"></i>
+            </label>
+          </div>
+        }
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- STROKE COLOR SETTINGS -->
+      <div class="props__group">
+        <label class="props__label">Stroke Color</label>
+        <div class="props__swatches">
+          @for (sw of shapeSwatches; track sw.value) {
+            <button
+              type="button"
+              class="props__swatch"
+              [class.props__swatch--active]="shapeStrokeColor() === sw.value"
+              [style.background-color]="sw.value"
+              (click)="setToolStrokeColor(sw.value)"
+              [title]="sw.label"
+            ></button>
+          }
+          <label class="props__custom-color-btn" title="Custom stroke color">
+            <input
+              type="color"
+              [value]="shapeStrokeColor()"
+              (input)="setToolStrokeColor($any($event.target).value)"
+            />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- STROKE WIDTH -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label" for="toolShapeWidth">Stroke Width</label>
+          <span class="props__val">{{ shapeStrokeWidth() }}px</span>
+        </div>
+        <div class="props__seg-group props__seg-group--full mb-2">
+          @for (w of [1, 2, 4, 8]; track w) {
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="shapeStrokeWidth() === w"
+              (click)="setToolStrokeWidth(w)"
+            >
+              {{ w }}px
+            </button>
+          }
+        </div>
+        <input
+          type="range"
+          id="toolShapeWidth"
+          class="props__slider"
+          min="1"
+          max="24"
+          step="1"
+          [value]="shapeStrokeWidth()"
+          (input)="setToolStrokeWidth(+$any($event.target).value)"
+        />
+      </div>
+    </app-panel-section>
+  } @else if (activeTool() === 'icon') {
+    <!-- Icon Tool Configuration Section -->
+    <app-panel-section title="Icon Tool" icon="fa-solid fa-icons">
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Icon: {{ iconLabelOf(iconKind()) }}</label>
+        </div>
+
+        <!-- Icon Categories Tabs (All first) -->
+        <div class="props__shape-tabs">
+          <button
+            type="button"
+            class="props__shape-tab"
+            [class.props__shape-tab--active]="propsIconCategory() === 'all'"
+            (click)="propsIconCategory.set('all')"
+            title="All Icons"
+          >
+            All ({{ iconDefinitions.length }})
+          </button>
+          @for (cat of iconCategories; track cat.id) {
+            <button
+              type="button"
+              class="props__shape-tab"
+              [class.props__shape-tab--active]="propsIconCategory() === cat.id"
+              (click)="propsIconCategory.set(cat.id)"
+              [title]="cat.label"
+            >
+              <i [class]="cat.icon"></i> {{ cat.label }}
+            </button>
+          }
+        </div>
+
+        <!-- Icon Grid -->
+        <div class="props__shape-grid" (wheel)="onHorizontalWheel($event)">
+          @for (s of propsFilteredIcons(); track s.id) {
+            <button
+              type="button"
+              class="props__shape-btn"
+              [class.props__shape-btn--active]="iconKind() === s.id"
+              (click)="setToolIconKind(s.id)"
+              [title]="s.label"
+            >
+              <i [class]="s.icon"></i>
+              <span>{{ s.label }}</span>
+            </button>
+          }
+        </div>
+      </div>
+
+      <!-- RESIZE RATIO DEFAULT -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Resize Ratio</label>
+          <span class="props__hint-inline">{{ resizeModeLabel(state.resizeMode()) }}</span>
+        </div>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="state.resizeMode() === 'fixed'"
+            (click)="state.setResizeMode('fixed')"
+            title="Fixed 1:1 Aspect Ratio when dragging border handles"
+            aria-label="Fixed 1:1 Ratio"
+          >
+            <i class="fa-solid fa-square"></i> Fixed 1:1
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="state.resizeMode() === 'item'"
+            (click)="state.setResizeMode('item')"
+            title="Fixed ratio of the item when dragging border handles"
+            aria-label="Fixed Item Ratio"
+          >
+            <i class="fa-solid fa-lock"></i> Item Ratio
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="state.resizeMode() === 'free'"
+            (click)="state.setResizeMode('free')"
+            title="Free Hand resizing when dragging border handles"
+            aria-label="Free Hand"
+          >
+            <i class="fa-solid fa-arrows-up-down-left-right"></i> Free Hand
+          </button>
+        </div>
+      </div>
+
+      <!-- ICON STYLE DEFAULT -->
+      <div class="props__divider"></div>
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Icon Style</label>
+          <span class="props__hint-inline">{{ state.iconStyle() }}</span>
+        </div>
+        <div class="props__seg-group props__seg-group--full props__icon-style-grid">
+          @for (opt of iconStyleOptions; track opt.id) {
+            <button
+              type="button"
+              class="props__seg-btn"
+              [class.props__seg-btn--on]="state.iconStyle() === opt.id"
+              (click)="state.setIconStyle(opt.id)"
+              [title]="opt.description"
+              [attr.aria-label]="opt.label"
+            >
+              <i [class]="opt.icon"></i>
+              <span>{{ opt.label }}</span>
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- ICON COLOR SETTINGS -->
+      <div class="props__group">
+        <label class="props__label">Icon Color</label>
+        <div class="props__swatches">
+          @for (sw of shapeSwatches; track sw.value) {
+            <button
+              type="button"
+              class="props__swatch"
+              [class.props__swatch--active]="shapeStrokeColor() === sw.value"
+              [style.background-color]="sw.value"
+              (click)="setToolStrokeColor(sw.value)"
+              [title]="sw.label"
+            ></button>
+          }
+          <label class="props__custom-color-btn" title="Custom icon color">
+            <input
+              type="color"
+              [value]="shapeStrokeColor()"
+              (input)="setToolStrokeColor($any($event.target).value)"
+            />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+        </div>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <!-- BACKGROUND FILL SETTINGS -->
+      <div class="props__group">
+        <div class="props__row props__row--between">
+          <label class="props__label">Background Fill</label>
+          <button
+            type="button"
+            class="props__seg-btn props__seg-btn--sm"
+            [class.props__seg-btn--on]="shapeFillEnabled()"
+            (click)="toggleToolShapeFill()"
+          >
+            <i class="fa-solid fa-fill-drip"></i>
+            {{ shapeFillEnabled() ? 'Enabled' : 'None' }}
+          </button>
+        </div>
+
+        @if (shapeFillEnabled()) {
+          <div class="props__swatches">
+            @for (sw of shapeSwatches; track sw.value) {
+              <button
+                type="button"
+                class="props__swatch"
+                [class.props__swatch--active]="shapeFillColor() === sw.value"
+                [style.background-color]="sw.value"
+                (click)="setToolFillColor(sw.value)"
+                [title]="sw.label"
+              ></button>
+            }
+            <label class="props__custom-color-btn" title="Custom fill color">
+              <input
+                type="color"
+                [value]="shapeFillColor()"
+                (input)="setToolFillColor($any($event.target).value)"
+              />
+              <i class="fa-solid fa-eye-dropper"></i>
+            </label>
+          </div>
+        }
+      </div>
+    </app-panel-section>
+  } @else if (activeTool() === 'content-edit') {
+    <app-panel-section title="PDF Text Edit" icon="fa-solid fa-i-cursor">
+      <div class="props__group">
+        <label class="props__label">Direct Text Editing</label>
+        <p class="props__hint" style="font-size: 12px; line-height: 1.5; color: var(--pf-on-surface); margin: 0 0 8px 0;">
+          <i class="fa-solid fa-mouse-pointer" style="color: var(--pf-primary); margin-right: 6px;"></i>
+          Click on any text on the page to start editing it directly.
+        </p>
+        <p class="props__hint" style="font-size: 11px; line-height: 1.4; color: var(--pf-text-muted); margin: 0;">
+          Once selected, adjust its font size, space between font, padding, margin offsets, background colour, font family, and advanced styles in real-time right here.
+        </p>
+      </div>
+    </app-panel-section>
+  } @else if (activeTool() === 'select') {
+    <app-panel-section title="Selection Options" icon="fa-solid fa-arrow-pointer">
+      <div class="props__group">
+        <label class="props__label">Selection Mode</label>
+        <div class="props__seg-group props__seg-group--full">
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow d-md-none"
+            [class.props__seg-btn--on]="selectMode() === 'none'"
+            (click)="setSelectMode('none')"
+            title="Click Only: Tap individual items to select"
+          >
+            <i class="fa-solid fa-arrow-pointer"></i> None
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="selectMode() === 'box'"
+            (click)="setSelectMode('box')"
+            title="Box Marquee: Drag a rectangle to select elements"
+          >
+            <i class="fa-solid fa-crop-simple"></i> Box Drag
+          </button>
+          <button
+            type="button"
+            class="props__seg-btn props__field--grow"
+            [class.props__seg-btn--on]="selectMode() === 'lasso'"
+            (click)="setSelectMode('lasso')"
+            title="Lasso: Draw a freehand loop around items to select"
+          >
+            <i class="fa-solid fa-draw-polygon"></i> Freehand Lasso
+          </button>
+        </div>
+        <p class="props__hint" style="font-size: 11px; margin-top: 4px; color: var(--pf-text-muted);">
+          @if (selectMode() === 'none') {
+            <span><i class="fa-solid fa-arrow-pointer"></i> Click on individual items to select. No drag marquee.</span>
+          } @else if (selectMode() === 'box') {
+            <span><i class="fa-solid fa-vector-square"></i> Drag across canvas to select enclosed items with a rectangle.</span>
+          } @else {
+            <span><i class="fa-solid fa-draw-polygon"></i> Draw a freeform loop around items to select all enclosed marks.</span>
+          }
+        </p>
+      </div>
+
+      <div class="props__divider"></div>
+
+      <div class="props__group">
+        <label class="props__label">Quick Selection</label>
+        <button
+          type="button"
+          class="props__seg-btn props__seg-group--full"
+          (click)="selectAll()"
+          title="Select all marks and annotations on current page"
+        >
+          <i class="fa-solid fa-object-group"></i> Select All Page Marks
+        </button>
+      </div>
+    </app-panel-section>
+  } @else {
+    <app-panel-section
+      title="Getting started"
+      icon="fa-solid fa-hand-pointer"
+    >
+      <p class="pf-text-muted props__empty-text">
+        Select an object on the page to edit its properties, or pick a tool
+        from the toolbar to add a new annotation.
+      </p>
+    </app-panel-section>
+  }
+</div>

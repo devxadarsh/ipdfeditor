@@ -8,57 +8,58 @@ import {
   NgZone,
 } from '@angular/core';
 import { Router } from '@angular/router';
-import { RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { NgClass } from '@angular/common';
-import * as forge from 'node-forge';
-import {
-  SignatureResult,
-  DigitalSignatureRequest,
-} from '../../core/models/pdf.models';
-import { SignatureBridgeService } from '../../core/services/signature-bridge.service';
+import { FileDropzoneComponent } from '../../shared/components/dropzone/file-dropzone.component';
+import { BreadcrumbsComponent } from '../../shared/components/breadcrumbs/breadcrumbs.component';
+import { ToolSeoContentComponent } from '../../shared/components/tool-seo-content/tool-seo-content.component';
+import { DownloadService } from '../../core/services/download/download.service';
 import { ToastService } from '../../core/services/toast.service';
+import { SeoService } from '../../core/services/seo/seo.service';
+import { SEO_CONFIGS } from '../../core/constants/seo-data';
+import { LoadedFile } from '../../core/models/file.models';
 
 @Component({
   selector: 'app-signature',
   standalone: true,
-  imports: [RouterLink, FormsModule, NgClass],
+  imports: [
+    FormsModule,
+    NgClass,
+    FileDropzoneComponent,
+    BreadcrumbsComponent,
+    ToolSeoContentComponent,
+  ],
   templateUrl: './signature.component.html',
   styleUrl: './signature.component.scss',
 })
 export class SignatureComponent {
   private readonly zone = inject(NgZone);
   private readonly router = inject(Router);
-  private readonly bridge = inject(SignatureBridgeService);
+  private readonly downloads = inject(DownloadService);
   private readonly toasts = inject(ToastService);
-  readonly tab = signal<'draw' | 'type' | 'upload' | 'digital'>('draw');
+  private readonly seo = inject(SeoService);
+
+  readonly seoConfig = SEO_CONFIGS['signature'];
+
+  readonly tab = signal<'draw' | 'type' | 'upload'>('draw');
 
   // Draw state
   private canvas = viewChild<ElementRef<HTMLCanvasElement>>('canvas');
   private drawing = false;
   private last: { x: number; y: number } | null = null;
+  readonly strokeColor = signal<string>('#0f172a');
+  readonly strokeWidth = signal<number>(2.5);
 
   // Type state
   readonly typed = signal('Your Name');
   readonly font = signal<'cursive' | 'serif' | 'sans'>('cursive');
-
-  // Upload state
-  readonly uploadDataUrl = signal<string | null>(null);
-  readonly uploadWidth = signal(0);
-  readonly uploadHeight = signal(0);
-
-  // Digital ID state
-  readonly certBytes = signal<Uint8Array | null>(null);
-  readonly certName = signal('');
-  readonly password = signal('');
-  readonly reason = signal('');
-  readonly location = signal('');
-  readonly certError = signal<string | null>(null);
+  readonly typeColor = signal('#0f172a');
 
   // Output
   readonly dataUrl = signal<string | null>(null);
 
   constructor() {
+    this.seo.updatePage(this.seoConfig);
     afterNextRender(() => this.setupCanvas());
   }
 
@@ -73,46 +74,18 @@ export class SignatureComponent {
     const ctx = c.getContext('2d');
     if (ctx) {
       ctx.scale(ratio, ratio);
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = this.strokeWidth();
       ctx.lineCap = 'round';
-      ctx.strokeStyle = '#0f172a';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = this.strokeColor();
     }
   }
 
-  setTab(t: 'draw' | 'type' | 'upload' | 'digital'): void {
+  setTab(t: 'draw' | 'type' | 'upload'): void {
     this.tab.set(t);
-  }
-
-  onCertUpload(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file) {
-      return;
+    if (t === 'draw') {
+      setTimeout(() => this.setupCanvas(), 50);
     }
-    this.certError.set(null);
-    const reader = new FileReader();
-    reader.onload = () => {
-      const bytes = new Uint8Array(reader.result as ArrayBuffer);
-      try {
-        const p12 = forge.pkcs12.pkcs12FromAsn1(
-          forge.asn1.fromDer(forge.util.binary.raw.encode(bytes)),
-          this.password() || '',
-        );
-        const bags =
-          p12.getBags({ bagType: forge.pki.oids['certBag'] })[
-            forge.pki.oids['certBag']
-          ];
-        this.certName.set(bags?.[0]?.cert?.subject.getField('CN')?.value ?? '');
-        this.certBytes.set(bytes);
-      } catch {
-        this.certError.set(
-          'Could not read the certificate. Check the file and password.',
-        );
-        this.certBytes.set(null);
-      }
-    };
-    reader.readAsArrayBuffer(file);
   }
 
   startDraw(event: PointerEvent): void {
@@ -154,112 +127,70 @@ export class SignatureComponent {
     const c = this.canvas()?.nativeElement;
     const ctx = c?.getContext('2d');
     if (c && ctx) {
-      ctx.clearRect(0, 0, c.width, c.height);
+      const ratio = window.devicePixelRatio || 1;
+      ctx.clearRect(0, 0, c.width / ratio, c.height / ratio);
     }
     this.dataUrl.set(null);
   }
 
-  onUpload(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file) {
-      return;
-    }
-    if (!file.type.startsWith('image/')) {
-      this.toasts.error('Please choose an image file.');
-      return;
-    }
+  onUploadLoadedFiles(loaded: LoadedFile[]): void {
+    if (!loaded.length) return;
+    const file = loaded[0];
+    const blob = new Blob([file.data], { type: file.file.type || 'image/png' });
     const reader = new FileReader();
     reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const img = new Image();
-      img.onload = () => {
-        this.zone.run(() => {
-          this.uploadDataUrl.set(dataUrl);
-          this.uploadWidth.set(img.naturalWidth);
-          this.uploadHeight.set(img.naturalHeight);
-        });
-      };
-      img.src = dataUrl;
+      this.dataUrl.set(reader.result as string);
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(blob);
   }
 
-  private buildSignature(): SignatureResult | null {
-    if (this.tab() === 'draw') {
-      const c = this.canvas()?.nativeElement;
-      if (!c || !this.dataUrl()) {
-        return null;
-      }
-      return {
-        dataUrl: c.toDataURL('image/png'),
-        width: c.clientWidth,
-        height: c.clientHeight,
-      };
-    }
+  downloadSignature(): void {
+    let url = this.dataUrl();
     if (this.tab() === 'type') {
-      const text = this.typed().trim();
-      if (!text) {
-        return null;
-      }
-      const w = 420;
-      const h = 140;
-      const cv = document.createElement('canvas');
-      cv.width = w;
-      cv.height = h;
-      const ctx = cv.getContext('2d');
-      if (!ctx) {
-        return null;
-      }
-      ctx.fillStyle = '#0f172a';
-      ctx.font = `64px ${this.font()}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(text, w / 2, h / 2);
-      return { dataUrl: cv.toDataURL('image/png'), width: w, height: h };
+      url = this.generateTypedSignatureUrl();
     }
-    if (!this.uploadDataUrl()) {
-      return null;
+    if (!url) {
+      this.toasts.warning('Please create or draw a signature first.');
+      return;
     }
-    return {
-      dataUrl: this.uploadDataUrl()!,
-      width: this.uploadWidth(),
-      height: this.uploadHeight(),
-    };
+
+    const commaIndex = url.indexOf(',');
+    const base64 = commaIndex >= 0 ? url.slice(commaIndex + 1) : url;
+    const binStr = atob(base64);
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) {
+      bytes[i] = binStr.charCodeAt(i);
+    }
+
+    this.downloads.download(
+      new Blob([bytes], { type: 'image/png' }),
+      'signature.png',
+    );
+    this.toasts.success('Signature downloaded as PNG.');
   }
 
-  addToPdf(): void {
-    if (this.tab() === 'digital') {
-      const cert = this.certBytes();
-      if (!cert) {
-        this.toasts.error('Upload a .p12 or .pfx certificate first.');
-        return;
-      }
-      if (!this.password()) {
-        this.toasts.error('Enter the certificate password.');
-        return;
-      }
-      const request: DigitalSignatureRequest = {
-        certBytes: cert,
-        password: this.password(),
-        reason: this.reason().trim() || undefined,
-        location: this.location().trim() || undefined,
-      };
-      this.bridge.setDigitalSignature(request);
-      this.router.navigate(['/editor']);
-      this.toasts.info(
-        'Open a PDF, then Export to apply the cryptographic signature.',
-      );
-      return;
-    }
-    const signature = this.buildSignature();
-    if (!signature) {
-      this.toasts.error('Create a signature first: draw, type, or upload one.');
-      return;
-    }
-    this.bridge.setSignature(signature);
-    this.router.navigate(['/editor']);
-    this.toasts.info('Open a PDF, then click the page to place your signature.');
+  openEditor(): void {
+    void this.router.navigate(['/editor']);
+  }
+
+  private generateTypedSignatureUrl(): string {
+    const canvas = document.createElement('canvas');
+    canvas.width = 600;
+    canvas.height = 200;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+
+    const fontMap = {
+      cursive: "'Caveat', cursive",
+      serif: 'Georgia, serif',
+      sans: "'Inter', sans-serif",
+    };
+    ctx.font = `54px ${fontMap[this.font()] || 'cursive'}`;
+    ctx.fillStyle = this.typeColor();
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText(this.typed() || 'Signature', 300, 100);
+
+    return canvas.toDataURL('image/png');
   }
 }

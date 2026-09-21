@@ -32,20 +32,20 @@ describe('file.util', () => {
     });
 
     it('rejects empty files', () => {
-      expect(() => validatePdfFile(makeFile('', 'empty.pdf'))).toThrow(
+      expect(() => validatePdfFile(makeFile('', 'empty.pdf'))).toThrowError(
         FileValidationError,
       );
     });
 
     it('rejects non-pdf types', () => {
-      expect(() => validatePdfFile(makeFile('x', 'note.txt', 'text/plain'))).toThrow(
+      expect(() => validatePdfFile(makeFile('x', 'note.txt', 'text/plain'))).toThrowError(
         FileValidationError,
       );
     });
 
     it('rejects files over the size limit', () => {
       const big = makeFile('x', 'big.pdf', 'application/pdf', 600 * 1024 * 1024);
-      expect(() => validatePdfFile(big)).toThrow(FileValidationError);
+      expect(() => validatePdfFile(big)).toThrowError(FileValidationError);
     });
   });
 
@@ -93,6 +93,12 @@ describe('file.util', () => {
 
     it('honours a custom fallback extension', () => {
       expect(safeFileName('image', 'png')).toBe('image.png');
+    });
+
+    it('preserves existing file extension such as .zip or .docx', () => {
+      expect(safeFileName('my-archive.zip')).toBe('my-archive.zip');
+      expect(safeFileName('document-split.ZIP')).toBe('document-split.zip');
+      expect(safeFileName('contract-final.docx')).toBe('contract-final.docx');
     });
   });
 });

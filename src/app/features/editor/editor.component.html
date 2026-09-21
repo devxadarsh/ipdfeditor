@@ -1,382 +1,2043 @@
-<div class="editor">
-  <div class="editor__toolbar">
-    <div class="editor__toolbar-group">
-      @for (group of toolGroups() | keyvalue; track group.key) {
-        <div class="editor__toolset">
-          @for (tool of group.value; track tool.id) {
+<div class="editor" #editor>
+  @if (docSrc(); as pdfSrc) {
+  <ngx-extended-pdf-viewer class="editor__pdf-loader" [src]="pdfSrc" [showToolbar]="false" [showSidebarButton]="false"
+    [sidebarVisible]="false" [textLayer]="false" [showFindButton]="false"
+    [supportsDownloading]="false" [showDownloadButton]="false" [ignoreKeyboard]="true"
+    (pagesLoaded)="onPagesLoaded($event)"></ngx-extended-pdf-viewer>
+  }
+
+  <!-- Mobile Dedicated Drawing & Formatting Panel (Rendered as 2 rows above bottom toolbar on mobile) -->
+  @if (docName() && hasDrawingPanel()) {
+    <div class="editor__mobile-drawing-panel" aria-label="Mobile Drawing and Tool Controls">
+      <!-- Selected Text Annotation (2 Rows) -->
+      @if (selectedTextAnnotation(); as textAnn) {
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          <!-- 1. Lock / Unlock -->
           <button
             type="button"
-            class="editor__tool"
-            [class.editor__tool--active]="state.tool() === tool.id"
-            [title]="tool.label + (tool.shortcut ? ' (' + tool.shortcut + ')' : '')"
-            [attr.aria-label]="tool.label"
-            [attr.aria-pressed]="state.tool() === tool.id"
-            (click)="selectTool(tool.id)"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="textAnn.locked"
+            (click)="toggleLockSelected()"
+            [title]="textAnn.locked ? 'Unlock element' : 'Lock element'"
+            aria-label="Lock or Unlock"
           >
-              <i [ngClass]="tool.icon"></i>
+            <i class="fa-solid" [class.fa-lock]="textAnn.locked" [class.fa-lock-open]="!textAnn.locked"></i>
+          </button>
+          <!-- 2. Duplicate -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="textAnn.locked"
+            (click)="duplicateSelected()"
+            title="Duplicate element"
+            aria-label="Duplicate"
+          >
+            <i class="fa-solid fa-copy"></i>
+          </button>
+          <!-- 3. Delete -->
+          <button
+            type="button"
+            class="editor__dp-pill editor__dp-pill--danger"
+            [disabled]="textAnn.locked"
+            (click)="deleteSelected()"
+            title="Delete element"
+            aria-label="Delete"
+          >
+            <i class="fa-solid fa-trash-can"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <!-- Additional Tool Actions -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="textAnn.locked"
+            (click)="bringSelectedToFront()"
+            title="Bring to Front"
+            aria-label="Bring to Front"
+          >
+            <i class="fa-solid fa-arrow-up"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="textAnn.locked"
+            (click)="sendSelectedToBack()"
+            title="Send to Back"
+            aria-label="Send to Back"
+          >
+            <i class="fa-solid fa-arrow-down"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="textAnn.fontWeight >= 700"
+            [disabled]="textAnn.locked"
+            (click)="toggleTextBold()"
+            title="Bold text"
+            aria-label="Bold"
+          >
+            <i class="fa-solid fa-bold"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="textAnn.italic"
+            [disabled]="textAnn.locked"
+            (click)="toggleTextItalic()"
+            title="Italic text"
+            aria-label="Italic"
+          >
+            <i class="fa-solid fa-italic"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="textAnn.underline"
+            [disabled]="textAnn.locked"
+            (click)="toggleTextUnderline()"
+            title="Underline text"
+            aria-label="Underline"
+          >
+            <i class="fa-solid fa-underline"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="textAnn.align === 'left'"
+            [disabled]="textAnn.locked"
+            (click)="setTextAlign('left')"
+            title="Align Left"
+            aria-label="Align Left"
+          >
+            <i class="fa-solid fa-align-left"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="textAnn.align === 'center'"
+            [disabled]="textAnn.locked"
+            (click)="setTextAlign('center')"
+            title="Align Center"
+            aria-label="Align Center"
+          >
+            <i class="fa-solid fa-align-center"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="textAnn.align === 'right'"
+            [disabled]="textAnn.locked"
+            (click)="setTextAlign('right')"
+            title="Align Right"
+            aria-label="Align Right"
+          >
+            <i class="fa-solid fa-align-right"></i>
+          </button>
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Color:</span>
+          @for (c of penColorSwatches; track c) {
+            <button
+              type="button"
+              class="editor__dp-swatch"
+              [style.background-color]="c"
+              [class.editor__dp-swatch--active]="textAnn.color === c"
+              (click)="setTextColor(c)"
+              [title]="c"
+            ></button>
+          }
+          <label class="editor__dp-color-picker" title="Custom color">
+            <input type="color" [value]="textAnn.color" (input)="setTextColor($any($event.target).value)" />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+          <div class="editor__dp-divider"></div>
+          <span class="editor__dp-label">Size:</span>
+          @for (sz of textFontSizePresets; track sz) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="textAnn.fontSize === sz"
+              (click)="setTextFontSize(sz)"
+            >
+              {{ sz }}px
             </button>
           }
+        </div>
+      } @else if (selectedImageAnnotation(); as imgAnn) {
+        <!-- Image Selected Annotation (2 Rows on Mobile) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          <!-- 1. Lock / Unlock -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="imgAnn.locked"
+            (click)="toggleLockSelected()"
+            [title]="imgAnn.locked ? 'Unlock element' : 'Lock element'"
+            aria-label="Lock or Unlock"
+          >
+            <i class="fa-solid" [class.fa-lock]="imgAnn.locked" [class.fa-lock-open]="!imgAnn.locked"></i>
+          </button>
+          <!-- 2. Duplicate -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="imgAnn.locked"
+            (click)="duplicateSelected()"
+            title="Duplicate image"
+            aria-label="Duplicate"
+          >
+            <i class="fa-solid fa-copy"></i>
+          </button>
+          <!-- 3. Delete -->
+          <button
+            type="button"
+            class="editor__dp-pill editor__dp-pill--danger"
+            [disabled]="imgAnn.locked"
+            (click)="deleteSelected()"
+            title="Delete image"
+            aria-label="Delete"
+          >
+            <i class="fa-solid fa-trash-can"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <!-- Additional Tool Actions -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="imgAnn.flipHorizontal"
+            [disabled]="imgAnn.locked"
+            (click)="toggleImageFlipH()"
+            title="Flip Horizontally"
+            aria-label="Flip Horizontal"
+          >
+            <i class="fa-solid fa-arrows-left-right"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="imgAnn.flipVertical"
+            [disabled]="imgAnn.locked"
+            (click)="toggleImageFlipV()"
+            title="Flip Vertically"
+            aria-label="Flip Vertical"
+          >
+            <i class="fa-solid fa-arrows-up-down"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="imgAnn.locked"
+            (click)="rotateSelectedAnnotation(90)"
+            title="Rotate 90° Clockwise"
+            aria-label="Rotate 90°"
+          >
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="imgAnn.locked"
+            (click)="bringSelectedToFront()"
+            title="Bring to Front"
+            aria-label="Bring to Front"
+          >
+            <i class="fa-solid fa-arrow-up"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="imgAnn.locked"
+            (click)="sendSelectedToBack()"
+            title="Send to Back"
+            aria-label="Send to Back"
+          >
+            <i class="fa-solid fa-arrow-down"></i>
+          </button>
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Blend:</span>
+          @for (bm of mobileBlendModes; track bm.value) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="(imgAnn.blendMode || 'normal') === bm.value"
+              [disabled]="imgAnn.locked"
+              (click)="setImageBlendMode(bm.value)"
+            >
+              {{ bm.label }}
+            </button>
+          }
+          <div class="editor__dp-divider"></div>
+          <span class="editor__dp-label">Ratio:</span>
+          @for (rm of mobileRatioModes; track rm.value) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="(imgAnn.aspectRatioMode || 'original') === rm.value"
+              [disabled]="imgAnn.locked"
+              (click)="setImageAspectRatioMode(rm.value)"
+            >
+              {{ rm.label }}
+            </button>
+          }
+        </div>
+      } @else if (selectedSignatureAnnotation(); as sigAnn) {
+        <!-- Signature Selected Annotation (2 Rows on Mobile) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          <!-- 1. Lock / Unlock -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="sigAnn.locked"
+            (click)="toggleLockSelected()"
+            [title]="sigAnn.locked ? 'Unlock element' : 'Lock element'"
+            aria-label="Lock or Unlock"
+          >
+            <i class="fa-solid" [class.fa-lock]="sigAnn.locked" [class.fa-lock-open]="!sigAnn.locked"></i>
+          </button>
+          <!-- 2. Duplicate -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="sigAnn.locked"
+            (click)="duplicateSelected()"
+            title="Duplicate signature"
+            aria-label="Duplicate"
+          >
+            <i class="fa-solid fa-copy"></i>
+          </button>
+          <!-- 3. Delete -->
+          <button
+            type="button"
+            class="editor__dp-pill editor__dp-pill--danger"
+            [disabled]="sigAnn.locked"
+            (click)="deleteSelected()"
+            title="Delete signature"
+            aria-label="Delete"
+          >
+            <i class="fa-solid fa-trash-can"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <!-- Additional Actions -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="sigAnn.locked"
+            (click)="rotateSelectedAnnotation(90)"
+            title="Rotate 90°"
+            aria-label="Rotate 90°"
+          >
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="sigAnn.locked"
+            (click)="bringSelectedToFront()"
+            title="Bring to Front"
+            aria-label="Bring to Front"
+          >
+            <i class="fa-solid fa-arrow-up"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="sigAnn.locked"
+            (click)="sendSelectedToBack()"
+            title="Send to Back"
+            aria-label="Send to Back"
+          >
+            <i class="fa-solid fa-arrow-down"></i>
+          </button>
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Blend:</span>
+          @for (bm of mobileBlendModes; track bm.value) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="(sigAnn.blendMode || 'normal') === bm.value"
+              [disabled]="sigAnn.locked"
+              (click)="setImageBlendMode(bm.value)"
+            >
+              {{ bm.label }}
+            </button>
+          }
+        </div>
+      } @else if (selectedAnnotation(); as selAnn) {
+        <!-- Non-Text Selected Annotation (2 Rows) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          <!-- 1. Lock / Unlock -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="selAnn.locked"
+            (click)="toggleLockSelected()"
+            [title]="selAnn.locked ? 'Unlock element' : 'Lock element'"
+            aria-label="Lock or Unlock"
+          >
+            <i class="fa-solid" [class.fa-lock]="selAnn.locked" [class.fa-lock-open]="!selAnn.locked"></i>
+          </button>
+          <!-- 2. Duplicate -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="selAnn.locked"
+            (click)="duplicateSelected()"
+            title="Duplicate element"
+            aria-label="Duplicate"
+          >
+            <i class="fa-solid fa-copy"></i>
+          </button>
+          <!-- 3. Delete -->
+          <button
+            type="button"
+            class="editor__dp-pill editor__dp-pill--danger"
+            [disabled]="selAnn.locked"
+            (click)="deleteSelected()"
+            title="Delete element"
+            aria-label="Delete"
+          >
+            <i class="fa-solid fa-trash-can"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <!-- Additional Actions -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="selAnn.locked"
+            (click)="rotateSelectedAnnotation(90)"
+            title="Rotate 90°"
+            aria-label="Rotate 90°"
+          >
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="selAnn.locked"
+            (click)="bringSelectedToFront()"
+            title="Bring to Front"
+            aria-label="Bring to Front"
+          >
+            <i class="fa-solid fa-arrow-up"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [disabled]="selAnn.locked"
+            (click)="sendSelectedToBack()"
+            title="Send to Back"
+            aria-label="Send to Back"
+          >
+            <i class="fa-solid fa-arrow-down"></i>
+          </button>
+          @if (selAnn.type === 'shape') {
+            @if (selAnn.renderMode === 'icon') {
+              <!-- Icon Selected: Row 1 Extra = Change Icon + Resize Mode -->
+              <div class="editor__dp-divider"></div>
+              <button
+                type="button"
+                class="editor__dp-pill editor__dp-pill--active"
+                [disabled]="selAnn.locked"
+                (click)="openCategoryIcons(selectedIconCategory())"
+                [title]="'Change Icon (' + iconLabelOf(selAnn.kind) + ')'"
+                aria-label="Change Icon"
+              >
+                <i [class]="getShapeIconClass(selAnn)"></i>
+                <span style="font-size: 11px; margin-left: 2px;">{{ iconLabelOf(selAnn.kind) }}</span>
+                <i class="fa-solid fa-chevron-up" style="font-size: 8px; margin-left: 2px; opacity: 0.75;"></i>
+              </button>
+              <div class="editor__dp-divider"></div>
+              <button
+                type="button"
+                class="editor__dp-pill"
+                [disabled]="selAnn.locked"
+                [class.editor__dp-pill--active]="(selAnn.resizeMode || state.resizeMode()) !== 'free'"
+                (click)="toggleAnnotationResizeMode(selAnn)"
+                [title]="resizeModePillTitle(selAnn.resizeMode || state.resizeMode())"
+                aria-label="Toggle Resize Ratio"
+              >
+                <i [class]="resizeModePillIcon(selAnn.resizeMode || state.resizeMode())"></i>
+                <span>{{ resizeModePillLabel(selAnn.resizeMode || state.resizeMode()) }}</span>
+              </button>
+            } @else {
+              <!-- Shape Selected: Row 1 Extra = Change Shape + Resize Mode -->
+              <div class="editor__dp-divider"></div>
+              <button
+                type="button"
+                class="editor__dp-pill editor__dp-pill--active"
+                [disabled]="selAnn.locked"
+                (click)="openCategoryShapes(selectedShapeCategory())"
+                [title]="'Change Shape (' + shapeLabelOf(selAnn.kind) + ')'"
+                aria-label="Change Shape"
+              >
+                <i [class]="activeShapeDefinition().icon"></i>
+                <span style="font-size: 11px; margin-left: 2px;">{{ shapeLabelOf(selAnn.kind) }}</span>
+                <i class="fa-solid fa-chevron-up" style="font-size: 8px; margin-left: 2px; opacity: 0.75;"></i>
+              </button>
+              <div class="editor__dp-divider"></div>
+              <button
+                type="button"
+                class="editor__dp-pill"
+                [disabled]="selAnn.locked"
+                [class.editor__dp-pill--active]="(selAnn.resizeMode || state.resizeMode()) !== 'free'"
+                (click)="toggleAnnotationResizeMode(selAnn)"
+                [title]="resizeModePillTitle(selAnn.resizeMode || state.resizeMode())"
+                aria-label="Toggle Resize Ratio"
+              >
+                <i [class]="resizeModePillIcon(selAnn.resizeMode || state.resizeMode())"></i>
+                <span>{{ resizeModePillLabel(selAnn.resizeMode || state.resizeMode()) }}</span>
+              </button>
+            }
+          }
+        </div>
+        <div class="editor__dp-row">
+          @if (selAnn.type === 'shape' && selAnn.renderMode === 'icon') {
+            <!-- Selected Icon Row 2: Types, Color, Fill -->
+            <span class="editor__dp-label">Type:</span>
+            @for (st of iconStyleOptions; track st.id) {
+              <button
+                type="button"
+                class="editor__dp-pill"
+                [class.editor__dp-pill--active]="getAnnotationIconStyle(selAnn) === st.id"
+                [disabled]="selAnn.locked"
+                (click)="setAnnotationIconStyle(selAnn, st.id)"
+                [title]="st.description"
+              >
+                <i [class]="st.icon"></i>
+                <span>{{ st.label }}</span>
+              </button>
+            }
+            <div class="editor__dp-divider"></div>
+            <span class="editor__dp-label">Color:</span>
+            @for (c of shapeColorSwatches; track c) {
+              <button
+                type="button"
+                class="editor__dp-swatch"
+                [style.background-color]="c"
+                [class.editor__dp-swatch--active]="getAnnotationColor(selAnn) === c"
+                [disabled]="selAnn.locked"
+                (click)="setSelectionColor(c)"
+                [title]="c"
+              ></button>
+            }
+            <label class="editor__dp-color-picker" title="Icon color">
+              <input type="color" [value]="getAnnotationColor(selAnn)" [disabled]="selAnn.locked" (input)="setSelectionColor($any($event.target).value)" />
+              <i class="fa-solid fa-eye-dropper"></i>
+            </label>
+            <div class="editor__dp-divider"></div>
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="state.shapeFillEnabled()"
+              [disabled]="selAnn.locked"
+              (click)="toggleShapeFill()"
+              title="Toggle Fill"
+              aria-label="Toggle Fill"
+            >
+              <i class="fa-solid fa-fill-drip"></i>
+              <span>Fill</span>
+            </button>
+            @if (state.shapeFillEnabled()) {
+              <label class="editor__dp-color-picker" title="Fill color">
+                <input type="color" [value]="state.shapeFillColor()" [disabled]="selAnn.locked" (input)="setShapeFillColor($any($event.target).value)" />
+                <i class="fa-solid fa-palette"></i>
+              </label>
+            }
+          } @else if (selAnn.type === 'shape') {
+            <!-- Selected Shape Row 2: Fill, Stroke Color, Stroke Width -->
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="state.shapeFillEnabled()"
+              [disabled]="selAnn.locked"
+              (click)="toggleShapeFill()"
+              title="Toggle Fill"
+              aria-label="Toggle Fill"
+            >
+              <i class="fa-solid fa-fill-drip"></i>
+              <span>Fill</span>
+            </button>
+            @if (state.shapeFillEnabled()) {
+              <label class="editor__dp-color-picker" title="Fill color">
+                <input type="color" [value]="state.shapeFillColor()" [disabled]="selAnn.locked" (input)="setShapeFillColor($any($event.target).value)" />
+                <i class="fa-solid fa-palette"></i>
+              </label>
+            }
+            <div class="editor__dp-divider"></div>
+            <span class="editor__dp-label">Stroke:</span>
+            @for (c of shapeColorSwatches; track c) {
+              <button
+                type="button"
+                class="editor__dp-swatch"
+                [style.background-color]="c"
+                [class.editor__dp-swatch--active]="getAnnotationColor(selAnn) === c"
+                [disabled]="selAnn.locked"
+                (click)="setSelectionColor(c)"
+                [title]="c"
+              ></button>
+            }
+            <label class="editor__dp-color-picker" title="Stroke color">
+              <input type="color" [value]="getAnnotationColor(selAnn)" [disabled]="selAnn.locked" (input)="setSelectionColor($any($event.target).value)" />
+              <i class="fa-solid fa-eye-dropper"></i>
+            </label>
+            <div class="editor__dp-divider"></div>
+            <span class="editor__dp-label">Width:</span>
+            @for (w of strokeWidthPresets; track w) {
+              <button
+                type="button"
+                class="editor__dp-pill"
+                [class.editor__dp-pill--active]="getAnnotationStrokeWidth(selAnn) === w"
+                [disabled]="selAnn.locked"
+                (click)="setSelectionWidth(w)"
+              >
+                {{ w }}px
+              </button>
+            }
+          } @else if (selAnn.type === 'drawing' || selAnn.type === 'highlight' || selAnn.type === 'underline' || selAnn.type === 'strikethrough') {
+            <span class="editor__dp-label">Color:</span>
+            @for (c of penColorSwatches; track c) {
+              <button
+                type="button"
+                class="editor__dp-swatch"
+                [style.background-color]="c"
+                [class.editor__dp-swatch--active]="getAnnotationColor(selAnn) === c"
+                (click)="setSelectionColor(c)"
+                [title]="c"
+              ></button>
+            }
+            <label class="editor__dp-color-picker" title="Custom color">
+              <input type="color" [value]="getAnnotationColor(selAnn)" (input)="setSelectionColor($any($event.target).value)" />
+              <i class="fa-solid fa-eye-dropper"></i>
+            </label>
+            @if (selAnn.type === 'drawing') {
+              <div class="editor__dp-divider"></div>
+              <span class="editor__dp-label">Width:</span>
+              @for (w of strokeWidthPresets; track w) {
+                <button
+                  type="button"
+                  class="editor__dp-pill"
+                  [class.editor__dp-pill--active]="getAnnotationStrokeWidth(selAnn) === w"
+                  (click)="setSelectionWidth(w)"
+                >
+                  {{ w }}px
+                </button>
+              }
+            }
+          }
+        </div>
+      } @else if (state.tool() === 'select') {
+        <!-- Select Tool (2 Rows) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            (click)="selectAllAnnotations()"
+            title="Select all marks on page"
+            aria-label="Select All"
+          >
+            <i class="fa-solid fa-object-group"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            (click)="clearSelection()"
+            title="Clear selection"
+            aria-label="Clear Selection"
+          >
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill d-md-none"
+            [class.editor__dp-pill--active]="state.selectMode() === 'none'"
+            (click)="setSelectMode('none')"
+            title="Click Only: Tap items to select"
+            aria-label="Click Select Mode"
+          >
+            <i class="fa-solid fa-arrow-pointer"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.selectMode() === 'box'"
+            (click)="setSelectMode('box')"
+            title="Box Marquee: Drag rectangle to select"
+            aria-label="Box Drag Mode"
+          >
+            <i class="fa-solid fa-crop-simple"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.selectMode() === 'lasso'"
+            (click)="setSelectMode('lasso')"
+            title="Freehand Lasso: Draw loop around items"
+            aria-label="Lasso Mode"
+          >
+            <i class="fa-solid fa-draw-polygon"></i>
+          </button>
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Select Mode:</span>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.selectMode() === 'box'"
+            (click)="setSelectMode('box')"
+          >
+            Box Marquee
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.selectMode() === 'lasso'"
+            (click)="setSelectMode('lasso')"
+          >
+            Freehand Lasso
+          </button>
+        </div>
+      } @else if (state.tool() === 'pen') {
+        <!-- Pen Tool (2 Rows) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          @for (w of strokeWidthPresets; track w) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="state.penStrokeWidth() === w"
+              (click)="setPenWidth(w)"
+            >
+              {{ w }}px
+            </button>
+          }
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.drawingMode() === 'continuous'"
+            (click)="setDrawingMode('continuous')"
+            title="Natural Ink"
+            aria-label="Natural Ink"
+          >
+            <i class="fa-solid fa-pen-nib"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.drawingMode() === 'autoselect'"
+            (click)="setDrawingMode('autoselect')"
+            title="Auto-Select Area"
+            aria-label="Auto Select"
+          >
+            <i class="fa-solid fa-crop-simple"></i>
+          </button>
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Ink:</span>
+          @for (c of penColorSwatches; track c) {
+            <button
+              type="button"
+              class="editor__dp-swatch"
+              [style.background-color]="c"
+              [class.editor__dp-swatch--active]="state.penColor() === c"
+              (click)="setPenColor(c)"
+              [title]="c"
+            ></button>
+          }
+          <label class="editor__dp-color-picker" title="Custom color">
+            <input type="color" [value]="state.penColor()" (input)="setPenColor($any($event.target).value)" />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+        </div>
+      } @else if (state.tool() === 'freehand') {
+        <!-- Freehand Tool (2 Rows) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          @for (w of strokeWidthPresets; track w) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="state.freehandStrokeWidth() === w"
+              (click)="setFreehandWidth(w)"
+            >
+              {{ w }}px
+            </button>
+          }
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.drawingMode() === 'continuous'"
+            (click)="setDrawingMode('continuous')"
+            title="Natural Ink"
+            aria-label="Natural Ink"
+          >
+            <i class="fa-solid fa-pen-nib"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.drawingMode() === 'autoselect'"
+            (click)="setDrawingMode('autoselect')"
+            title="Auto-Select Area"
+            aria-label="Auto Select"
+          >
+            <i class="fa-solid fa-crop-simple"></i>
+          </button>
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Ink:</span>
+          @for (c of penColorSwatches; track c) {
+            <button
+              type="button"
+              class="editor__dp-swatch"
+              [style.background-color]="c"
+              [class.editor__dp-swatch--active]="state.freehandColor() === c"
+              (click)="setFreehandColor(c)"
+              [title]="c"
+            ></button>
+          }
+          <label class="editor__dp-color-picker" title="Custom color">
+            <input type="color" [value]="state.freehandColor()" (input)="setFreehandColor($any($event.target).value)" />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+        </div>
+      } @else if (state.tool() === 'eraser') {
+        <!-- Eraser Tool (2 Rows) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.eraserMode() === 'segment'"
+            (click)="setEraserMode('segment')"
+            title="Cut path segments"
+            aria-label="Cut Segments"
+          >
+            <i class="fa-solid fa-scissors"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.eraserMode() === 'stroke'"
+            (click)="setEraserMode('stroke')"
+            title="Erase full stroke"
+            aria-label="Erase Stroke"
+          >
+            <i class="fa-solid fa-eraser"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.eraserTarget() === 'all'"
+            (click)="setEraserTarget('all')"
+            title="Erase all items"
+            aria-label="Erase All"
+          >
+            <i class="fa-solid fa-layer-group"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.eraserTarget() === 'drawing'"
+            (click)="setEraserTarget('drawing')"
+            title="Erase ink strokes only"
+            aria-label="Erase Ink"
+          >
+            <i class="fa-solid fa-paintbrush"></i>
+          </button>
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Cut Size:</span>
+          @for (s of eraserSizePresets; track s) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="state.eraserSize() === s"
+              (click)="setEraserSize(s)"
+            >
+              {{ s }}px
+            </button>
+          }
+        </div>
+      } @else if (state.tool() === 'shape' || state.tool() === 'rectangle' || state.tool() === 'circle' || state.tool() === 'arrow' || state.tool() === 'line') {
+        <!-- Shapes Tool: Row 1 = Categories (All first); Row 2 = Properties -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Category:</span>
+          <!-- 1. All shapes first -->
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="selectedShapeCategory() === 'all'"
+            (click)="openCategoryShapes('all')"
+            title="All {{ shapeDefinitions.length }} Shapes"
+          >
+            <i class="fa-solid fa-shapes"></i>
+            <span>All ({{ shapeDefinitions.length }})</span>
+          </button>
+          <!-- Remaining categories -->
+          @for (cat of shapeCategories; track cat.id) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="selectedShapeCategory() === cat.id"
+              (click)="openCategoryShapes(cat.id)"
+              [title]="cat.label"
+            >
+              <i [class]="cat.icon"></i>
+              <span>{{ cat.label }}</span>
+            </button>
+          }
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Shape:</span>
+          <button
+            type="button"
+            class="editor__dp-pill editor__dp-pill--active"
+            (click)="openCategoryShapes(selectedShapeCategory())"
+            [title]="'Change Shape (' + activeShapeDefinition().label + ')'"
+            aria-label="Change Shape"
+          >
+            <i [class]="activeShapeDefinition().icon"></i>
+            <i class="fa-solid fa-chevron-up" style="font-size: 8px; margin-left: 2px; opacity: 0.75;"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.shapeFillEnabled()"
+            (click)="toggleShapeFill()"
+            title="Toggle Shape Fill"
+            aria-label="Toggle Shape Fill"
+          >
+            <i class="fa-solid fa-fill-drip"></i>
+            <span>Fill</span>
+          </button>
+          @if (state.shapeFillEnabled()) {
+            <label class="editor__dp-color-picker" title="Fill color">
+              <input type="color" [value]="state.shapeFillColor()" (input)="setShapeFillColor($any($event.target).value)" />
+              <i class="fa-solid fa-palette"></i>
+            </label>
+          }
+          <div class="editor__dp-divider"></div>
+          <span class="editor__dp-label">Stroke:</span>
+          @for (c of shapeColorSwatches; track c) {
+            <button
+              type="button"
+              class="editor__dp-swatch"
+              [style.background-color]="c"
+              [class.editor__dp-swatch--active]="state.shapeStrokeColor() === c"
+              (click)="setShapeStrokeColor(c)"
+              [title]="c"
+            ></button>
+          }
+          <label class="editor__dp-color-picker" title="Stroke color">
+            <input type="color" [value]="state.shapeStrokeColor()" (input)="setShapeStrokeColor($any($event.target).value)" />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+          <div class="editor__dp-divider"></div>
+          <span class="editor__dp-label">Width:</span>
+          @for (w of strokeWidthPresets; track w) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="state.shapeStrokeWidth() === w"
+              (click)="setShapeStrokeWidth(w)"
+            >
+              {{ w }}px
+            </button>
+          }
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.resizeMode() !== 'free'"
+            (click)="state.toggleResizeMode()"
+            [title]="resizeModePillTitle(state.resizeMode())"
+            aria-label="Toggle Resize Ratio"
+          >
+            <i [class]="resizeModePillIcon(state.resizeMode())"></i>
+            <span>{{ resizeModePillLabel(state.resizeMode()) }}</span>
+          </button>
+        </div>
+      } @else if (state.tool() === 'icon') {
+        <!-- Icons Tool: Row 1 = 5 Icon Types & Categories; Row 2 = Active Icon, Colors, Resize -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Type:</span>
+          @for (st of iconStyleOptions; track st.id) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="state.iconStyle() === st.id"
+              (click)="state.setIconStyle(st.id)"
+              [title]="st.description"
+            >
+              <i [class]="st.icon"></i>
+              <span>{{ st.label }}</span>
+            </button>
+          }
+          <div class="editor__dp-divider"></div>
+          <span class="editor__dp-label">Category:</span>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="selectedIconCategory() === 'all'"
+            (click)="openCategoryIcons('all')"
+            title="All {{ iconDefinitions.length }} Icons"
+          >
+            <i class="fa-solid fa-icons"></i>
+            <span>All ({{ iconDefinitions.length }})</span>
+          </button>
+          @for (cat of iconCategories; track cat.id) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="selectedIconCategory() === cat.id"
+              (click)="openCategoryIcons(cat.id)"
+              [title]="cat.label"
+            >
+              <i [class]="cat.icon"></i>
+              <span>{{ cat.label }}</span>
+            </button>
+          }
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Icon:</span>
+          <button
+            type="button"
+            class="editor__dp-pill editor__dp-pill--active"
+            (click)="openCategoryIcons(selectedIconCategory())"
+            [title]="'Change Icon (' + activeIconDefinition().label + ')'"
+            aria-label="Change Icon"
+          >
+            <i [class]="activeIconDefinition().icon"></i>
+            <span style="font-size: 11px; margin-left: 2px;">{{ activeIconDefinition().label }}</span>
+            <i class="fa-solid fa-chevron-up" style="font-size: 8px; margin-left: 2px; opacity: 0.75;"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          <span class="editor__dp-label">Color:</span>
+          @for (c of shapeColorSwatches; track c) {
+            <button
+              type="button"
+              class="editor__dp-swatch"
+              [style.background-color]="c"
+              [class.editor__dp-swatch--active]="state.shapeStrokeColor() === c"
+              (click)="setShapeStrokeColor(c)"
+              [title]="c"
+            ></button>
+          }
+          <label class="editor__dp-color-picker" title="Icon color">
+            <input type="color" [value]="state.shapeStrokeColor()" (input)="setShapeStrokeColor($any($event.target).value)" />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.shapeFillEnabled()"
+            (click)="toggleShapeFill()"
+            title="Toggle Background Fill"
+            aria-label="Toggle Background Fill"
+          >
+            <i class="fa-solid fa-fill-drip"></i>
+            <span>Fill</span>
+          </button>
+          @if (state.shapeFillEnabled()) {
+            <label class="editor__dp-color-picker" title="Fill color">
+              <input type="color" [value]="state.shapeFillColor()" (input)="setShapeFillColor($any($event.target).value)" />
+              <i class="fa-solid fa-palette"></i>
+            </label>
+          }
+          <div class="editor__dp-divider"></div>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.resizeMode() !== 'free'"
+            (click)="state.toggleResizeMode()"
+            [title]="resizeModePillTitle(state.resizeMode())"
+            aria-label="Toggle Resize Ratio"
+          >
+            <i [class]="resizeModePillIcon(state.resizeMode())"></i>
+            <span>{{ resizeModePillLabel(state.resizeMode()) }}</span>
+          </button>
+        </div>
+      } @else if (state.tool() === 'text') {
+        <!-- Text Tool (2 Rows) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.textBold()"
+            (click)="toggleTextBold()"
+            title="Bold text"
+            aria-label="Bold"
+          >
+            <i class="fa-solid fa-bold"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.textItalic()"
+            (click)="toggleTextItalic()"
+            title="Italic text"
+            aria-label="Italic"
+          >
+            <i class="fa-solid fa-italic"></i>
+          </button>
+          <div class="editor__dp-divider"></div>
+          @for (sz of textFontSizePresets; track sz) {
+            <button
+              type="button"
+              class="editor__dp-pill"
+              [class.editor__dp-pill--active]="state.textFontSize() === sz"
+              (click)="setTextFontSize(sz)"
+            >
+              {{ sz }}px
+            </button>
+          }
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Color:</span>
+          @for (c of penColorSwatches; track c) {
+            <button
+              type="button"
+              class="editor__dp-swatch"
+              [style.background-color]="c"
+              [class.editor__dp-swatch--active]="state.textColor() === c"
+              (click)="setTextColor(c)"
+              [title]="c"
+            ></button>
+          }
+          <label class="editor__dp-color-picker" title="Custom color">
+            <input type="color" [value]="state.textColor()" (input)="setTextColor($any($event.target).value)" />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
+        </div>
+      } @else if (state.tool() === 'highlight' || state.tool() === 'underline' || state.tool() === 'strikethrough') {
+        <!-- Markup Tools (2 Rows) -->
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Actions:</span>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.tool() === 'highlight'"
+            (click)="selectTool('highlight')"
+            title="Highlighter"
+            aria-label="Highlight"
+          >
+            <i class="fa-solid fa-highlighter"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.tool() === 'underline'"
+            (click)="selectTool('underline')"
+            title="Underline"
+            aria-label="Underline"
+          >
+            <i class="fa-solid fa-underline"></i>
+          </button>
+          <button
+            type="button"
+            class="editor__dp-pill"
+            [class.editor__dp-pill--active]="state.tool() === 'strikethrough'"
+            (click)="selectTool('strikethrough')"
+            title="Strikethrough"
+            aria-label="Strikethrough"
+          >
+            <i class="fa-solid fa-strikethrough"></i>
+          </button>
+        </div>
+        <div class="editor__dp-row">
+          <span class="editor__dp-label">Color:</span>
+          @for (c of highlightColorSwatches; track c) {
+            <button
+              type="button"
+              class="editor__dp-swatch"
+              [style.background-color]="c"
+              [class.editor__dp-swatch--active]="(state.tool() === 'underline' ? state.underlineColor() : state.tool() === 'strikethrough' ? state.strikethroughColor() : state.highlightColor()) === c"
+              (click)="setHighlightColor(c)"
+              [title]="c"
+            ></button>
+          }
+          <label class="editor__dp-color-picker" title="Custom color">
+            <input type="color" [value]="state.tool() === 'underline' ? state.underlineColor() : state.tool() === 'strikethrough' ? state.strikethroughColor() : state.highlightColor()" (input)="setHighlightColor($any($event.target).value)" />
+            <i class="fa-solid fa-eye-dropper"></i>
+          </label>
         </div>
       }
     </div>
-    <div class="editor__toolbar-actions">
-      <button
-        type="button"
-        class="icon-btn"
-        (click)="undo()"
-        [disabled]="!history.canUndo()"
-        title="Undo (Ctrl/Cmd+Z)"
-        aria-label="Undo"
-      >
-        <i class="fa-solid fa-rotate-left"></i>
-      </button>
-      <button
-        type="button"
-        class="icon-btn"
-        (click)="redo()"
-        [disabled]="!history.canRedo()"
-        title="Redo (Ctrl/Cmd+Shift+Z)"
-        aria-label="Redo"
-      >
-        <i class="fa-solid fa-rotate-right"></i>
-      </button>
-      <span class="editor__toolbar-divider" aria-hidden="true"></span>
-      <button
-        type="button"
-        class="icon-btn"
-        [class.is-active]="state.textEditEnabled()"
-        (click)="toggleTextEdit()"
-        [attr.aria-pressed]="state.textEditEnabled()"
-        title="Edit document text: click text on the page to change or remove it"
-        aria-label="Edit document text"
-      >
-        <i class="fa-solid fa-i-cursor"></i>
-      </button>
-      <button
-        type="button"
-        class="export-btn"
-        (click)="exportPdf()"
-        [disabled]="!docName() || exporting()"
-        [attr.aria-label]="'Export edited PDF'"
-        title="Export edited PDF"
-      >
-        <span class="export-btn__icon">
-          @if (exporting()) {
-            <i class="fa-solid fa-spinner fa-spin"></i>
+  }
+
+  @if (docName()) {
+    <div class="editor__toolbar">
+      <div class="editor__toolbar-group">
+        @for (group of toolGroups() | keyvalue; track group.key) {
+        <div class="editor__toolset">
+          @if (group.key === 'shapes') {
+            <button
+              type="button"
+              class="editor__tool editor__tool--shape"
+              [class.editor__tool--active]="state.tool() === 'shape'"
+              (click)="onShapeToolClick($event)"
+              [title]="'Shapes (S) - ' + activeShapeDefinition().label"
+              aria-label="Shapes tool"
+            >
+              <i class="fa-solid fa-shapes"></i>
+            </button>
+            <button
+              type="button"
+              class="editor__tool editor__tool--icon"
+              [class.editor__tool--active]="state.tool() === 'icon'"
+              (click)="onIconToolClick($event)"
+              [title]="'Icons (I) - ' + activeIconDefinition().label"
+              aria-label="Icons tool"
+            >
+              <i class="fa-solid fa-icons"></i>
+            </button>
           } @else {
-            <i class="fa-solid fa-file-arrow-down"></i>
-          }
-        </span>
-        <span class="export-btn__label">
-          @if (exporting()) { Exporting… } @else { Export PDF }
-        </span>
-      </button>
-      <button
-        type="button"
-        class="icon-btn editor__viewbar-toggle"
-        (click)="toggleViewbar()"
-        [title]="viewbarVisible() ? 'Hide page bar' : 'Show page bar'"
-        [attr.aria-label]="viewbarVisible() ? 'Hide page bar' : 'Show page bar'"
-        [attr.aria-pressed]="viewbarVisible()"
-      >
-        <i
-          class="fa-solid"
-          [ngClass]="viewbarVisible() ? 'fa-chevron-up' : 'fa-chevron-down'"
-        ></i>
-      </button>
-    </div>
-  </div>
-
-  @if (docName() && viewbarVisible()) {
-    <div class="editor__viewbar">
-      <div class="editor__pagenav">
-        <button
-          type="button"
-          class="icon-btn"
-          (click)="prevPage()"
-          [disabled]="currentPageNumber() <= 1"
-          aria-label="Previous page"
-        >
-          <i class="fa-solid fa-chevron-left"></i>
-        </button>
-        <span class="editor__pagenav-label"
-          >Page {{ currentPageNumber() }} / {{ totalPages() }}</span
-        >
-        <button
-          type="button"
-          class="icon-btn"
-          (click)="nextPage()"
-          [disabled]="currentPageNumber() >= totalPages()"
-          aria-label="Next page"
-        >
-          <i class="fa-solid fa-chevron-right"></i>
-        </button>
-      </div>
-
-      <div class="editor__zoom">
-        <button type="button" class="icon-btn" (click)="zoomOut()" aria-label="Zoom out">
-          <i class="fa-solid fa-magnifying-glass-minus"></i>
-        </button>
-        <button
-          type="button"
-          class="editor__zoom-value"
-          (click)="resetZoom()"
-          [title]="zoomLabel()"
-        >
-          {{ zoomLabel() }}
-        </button>
-        <button type="button" class="icon-btn" (click)="zoomIn()" aria-label="Zoom in">
-          <i class="fa-solid fa-magnifying-glass-plus"></i>
-        </button>
-        <button
-          type="button"
-          class="editor__chip"
-          [class.editor__chip--active]="state.fitMode() === 'width'"
-          (click)="setFit('width')"
-        >
-          Fit width
-        </button>
-        <button
-          type="button"
-          class="editor__chip"
-          [class.editor__chip--active]="state.fitMode() === 'page'"
-          (click)="setFit('page')"
-        >
-          Fit page
-        </button>
-      </div>
-
-      <div class="editor__search" role="search">
-        <div class="editor__search-box">
-          <i class="fa-solid fa-magnifying-glass editor__search-icon" aria-hidden="true"></i>
-          <input
-            type="search"
-            class="editor__search-field"
-            placeholder="Search in document"
-            [value]="searchQuery()"
-            (input)="onSearch($any($event.target).value)"
-            aria-label="Search in document"
-          />
-          @if (searchQuery().trim()) {
-            <span class="editor__search-count">{{ searchCountLabel() }}</span>
-            <span class="editor__search-divider" aria-hidden="true"></span>
-            <button
-              type="button"
-              class="editor__search-nav"
-              (click)="searchPrev()"
-              aria-label="Previous match"
-            >
-              <i class="fa-solid fa-angle-up" aria-hidden="true"></i>
+            @for (tool of group.value; track tool.id) {
+            <button type="button" class="editor__tool" [class.editor__tool--active]="state.tool() === tool.id"
+              [title]="tool.label + (tool.shortcut ? ' (' + tool.shortcut + ')' : '')" [attr.aria-label]="tool.label"
+              [attr.aria-pressed]="state.tool() === tool.id" (click)="selectTool(tool.id)">
+              <i [ngClass]="tool.icon"></i>
             </button>
-            <button
-              type="button"
-              class="editor__search-nav"
-              (click)="searchNext()"
-              aria-label="Next match"
-            >
-              <i class="fa-solid fa-angle-down" aria-hidden="true"></i>
-            </button>
-            <button
-              type="button"
-              class="editor__search-nav editor__search-close"
-              (click)="clearSearch()"
-              aria-label="Clear search"
-            >
-              <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-            </button>
+            }
           }
         </div>
+        }
+      </div>
+      <div class="editor__toolbar-actions">
+        <button
+          type="button"
+          class="pf-btn pf-btn--primary pf-btn--sm"
+          (click)="onManualSaveClick()"
+          [disabled]="!docName() || saving()"
+          title="Save progress locally (Ctrl+S)"
+          aria-label="Save progress locally"
+        >
+          @if (saving()) {
+            <i class="fa-solid fa-spinner fa-spin"></i> Saving…
+          } @else {
+            <i class="fa-solid fa-floppy-disk"></i> Save
+          }
+        </button>
+        <button
+          type="button"
+          class="pf-btn pf-btn--ghost pf-btn--sm"
+          (click)="toggleFullscreen()"
+          [disabled]="!docName()"
+          [title]="isFullscreen() ? 'Exit fullscreen (Esc)' : 'Edit in fullscreen'"
+          [attr.aria-label]="isFullscreen() ? 'Exit fullscreen' : 'Edit in fullscreen'"
+        >
+          <i [class]="isFullscreen() ? 'fa-solid fa-compress' : 'fa-solid fa-expand'"></i>
+          {{ isFullscreen() ? 'Exit fullscreen' : 'Fullscreen' }}
+        </button>
       </div>
     </div>
   }
 
-  <div class="editor__body">
-    <aside class="editor__sidebar" aria-label="Pages">
-      <header class="side-head">
-        <span class="side-head__icon">
-          <i class="fa-solid fa-layer-group"></i>
+  <!-- Content-Edit Mode Status Banner -->
+  @if (docName() && isContentEditMode()) {
+    <div class="editor__content-edit-banner" role="status" aria-live="polite">
+      <div class="editor__content-edit-banner-content">
+        <i class="fa-solid fa-i-cursor"></i>
+        <span class="editor__content-edit-banner-text">
+          <strong>PDF Text Edit mode</strong>
+          <span class="d-none d-md-inline"> — Click any text on the page to edit it directly.</span>
+          <span class="d-inline d-md-none"> — Tap text to edit.</span>
         </span>
-        <div class="side-head__text">
-          <span class="side-head__eyebrow">Editor</span>
-          <h2 class="side-head__heading">Pages</h2>
+        @if (textEdit.warnings().length > 0) {
+          <span class="editor__content-edit-banner-warn">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            {{ textEdit.warnings()[0] }}
+          </span>
+        }
+      </div>
+      <button
+        type="button"
+        class="editor__content-edit-banner-exit"
+        (click)="selectTool('select')"
+        title="Exit PDF Text Edit mode (Shift+E)"
+        aria-label="Exit PDF Text Edit mode"
+      >
+        <i class="fa-solid fa-xmark"></i> Exit
+      </button>
+    </div>
+  }
+
+  <!-- Floating Placement Guidance Banner (Image / Stamp) -->
+  @if (docName() && state.pendingPlacement(); as pending) {
+    <div class="editor__placement-banner" role="status">
+      <div class="editor__placement-content">
+        <i [class]="pending.type === 'image' ? 'fa-solid fa-image' : 'fa-solid fa-stamp'"></i>
+        <span class="editor__placement-text">
+          <span class="d-none d-md-inline">Click on the page where you want to place the {{ pending.type === 'image' ? 'image' : 'stamp' }}.</span>
+          <span class="d-inline d-md-none">Tap on the page to place {{ pending.type === 'image' ? 'image' : 'stamp' }}.</span>
+        </span>
+      </div>
+      <button type="button" class="editor__placement-cancel" (click)="cancelPendingPlacement()" title="Cancel placement (Esc)">
+        <i class="fa-solid fa-xmark"></i> Cancel
+      </button>
+    </div>
+  }
+
+  @if (docName()) {
+  <div class="editor__viewbar">
+    <div class="editor__pagenav">
+      <button type="button" class="icon-btn" (click)="prevPage()" [disabled]="currentPageNumber() <= 1"
+        aria-label="Previous page">
+        <i class="fa-solid fa-chevron-left"></i>
+      </button>
+      <button type="button" class="editor__pagenav-label editor__pagenav-btn" (click)="openPagesSheet()"
+        title="View document pages">
+        Page {{ currentPageNumber() }} / {{ totalPages() }}
+      </button>
+      <button type="button" class="icon-btn" (click)="nextPage()" [disabled]="currentPageNumber() >= totalPages()"
+        aria-label="Next page">
+        <i class="fa-solid fa-chevron-right"></i>
+      </button>
+    </div>
+
+    <div class="editor__zoom">
+      <button type="button" class="icon-btn" (click)="zoomOut()" aria-label="Zoom out">
+        <i class="fa-solid fa-magnifying-glass-minus"></i>
+      </button>
+      <button
+        type="button"
+        class="editor__zoom-value"
+        (click)="toggleFit()"
+        [title]="'Click to toggle between Fit width and Fit page (currently ' + zoomLabel() + ')'"
+        [attr.aria-label]="zoomLabel()"
+      >
+        {{ zoomLabel() }}
+      </button>
+      <button type="button" class="icon-btn" (click)="zoomIn()" aria-label="Zoom in">
+        <i class="fa-solid fa-magnifying-glass-plus"></i>
+      </button>
+      <button
+        type="button"
+        class="editor__chip editor__chip--fit-w d-none d-md-inline-flex"
+        [class.editor__chip--active]="state.fitMode() === 'width'"
+        (click)="setFit('width')"
+      >
+        Fit width
+      </button>
+      <button
+        type="button"
+        class="editor__chip editor__chip--fit-p d-none d-md-inline-flex"
+        [class.editor__chip--active]="state.fitMode() === 'page'"
+        (click)="setFit('page')"
+      >
+        Fit page
+      </button>
+    </div>
+
+    <!-- Desktop Search Bar (Right-aligned) -->
+    <div class="editor__search editor__search--desktop">
+      <i class="fa-solid fa-magnifying-glass editor__search-icon"></i>
+      <input
+        type="search"
+        class="pf-input editor__search-input"
+        placeholder="Search in document…"
+        [value]="searchQuery()"
+        (input)="onSearch($any($event.target).value)"
+        (keydown)="onSearchKeydown($event)"
+        aria-label="Search in document"
+      />
+      @if (searchQuery().trim()) {
+        <span class="editor__search-count">{{ searchCountLabel() }}</span>
+        <button type="button" class="icon-btn editor__search-btn" (click)="searchPrev()" title="Previous match (Shift+Enter)" aria-label="Previous match">
+          <i class="fa-solid fa-chevron-up"></i>
+        </button>
+        <button type="button" class="icon-btn editor__search-btn" (click)="searchNext()" title="Next match (Enter)" aria-label="Next match">
+          <i class="fa-solid fa-chevron-down"></i>
+        </button>
+        <button type="button" class="icon-btn editor__search-clear-btn" (click)="clearSearch()" title="Clear search (Esc)" aria-label="Clear search">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      }
+    </div>
+
+    <!-- Mobile Action Buttons (Search, Pages) -->
+    <div class="editor__mobile-actions">
+      <button
+        type="button"
+        class="icon-btn editor__mobile-btn"
+        [class.icon-btn--active]="isMobileSearchOpen()"
+        (click)="toggleMobileSearch()"
+        title="Search in document"
+        aria-label="Search in document"
+      >
+        <i class="fa-solid fa-magnifying-glass"></i>
+      </button>
+      <button
+        type="button"
+        class="icon-btn editor__mobile-btn"
+        [class.icon-btn--active]="state.mobilePagesOpen()"
+        (click)="openPagesSheet()"
+        title="Pages overview"
+        aria-label="Pages overview"
+      >
+        <i class="fa-solid fa-layer-group"></i>
+      </button>
+      <button
+        type="button"
+        class="icon-btn editor__mobile-btn editor__mobile-btn--primary"
+        (click)="openExportModal()"
+        [disabled]="exporting()"
+        title="Export PDF"
+        aria-label="Export PDF"
+      >
+        <i class="fa-solid" [class.fa-file-arrow-down]="!exporting()" [class.fa-spinner]="exporting()" [class.fa-spin]="exporting()"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- Expandable Mobile Search Overlay -->
+  @if (isMobileSearchOpen()) {
+    <div class="editor__mobile-search-bar">
+      <i class="fa-solid fa-magnifying-glass"></i>
+      <input
+        type="search"
+        class="pf-input editor__mobile-search-input"
+        placeholder="Search in document…"
+        [value]="searchQuery()"
+        (input)="onSearch($any($event.target).value)"
+        aria-label="Search document on mobile"
+        autofocus
+      />
+      @if (searchQuery().trim()) {
+        <button type="button" class="icon-btn" (click)="searchPrev()" aria-label="Previous match">
+          <i class="fa-solid fa-chevron-up"></i>
+        </button>
+        <button type="button" class="icon-btn" (click)="searchNext()" aria-label="Next match">
+          <i class="fa-solid fa-chevron-down"></i>
+        </button>
+        <span class="editor__search-count">{{ searchCountLabel() }}</span>
+      }
+      <button type="button" class="icon-btn" (click)="closeMobileSearch()" aria-label="Close search">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
+  }
+
+    <!-- Mobile Option Bar (Always displays selected tool name, mode, and options trigger) -->
+    <div class="editor__mobile-option-bar" aria-label="Selected tool status">
+      <div class="editor__mob-opt-left">
+        <span class="editor__mob-opt-badge">
+          <i [class]="currentToolIcon()"></i>
+          <span class="editor__mob-opt-name">{{ currentToolName() }}</span>
+        </span>
+        <span class="editor__mob-opt-hint">{{ currentToolHint() }}</span>
+      </div>
+      @if (state.pendingPlacement()) {
+        <button
+          type="button"
+          class="editor__mob-opt-btn editor__mob-opt-btn--cancel"
+          (click)="cancelPendingPlacement()"
+          title="Cancel placement"
+          aria-label="Cancel placement"
+        >
+          <i class="fa-solid fa-xmark"></i>
+          <span>Cancel</span>
+        </button>
+      } @else {
+        <button
+          type="button"
+          class="editor__mob-opt-btn"
+          (click)="openPropertiesSheet()"
+          title="Open full options"
+          aria-label="Open full options"
+        >
+          <i class="fa-solid fa-sliders"></i>
+          <span>Options</span>
+        </button>
+      }
+    </div>
+  }
+
+  <div class="editor__body"
+    [class.editor__body--landing]="!docName()"
+    [class.editor__body--pages-collapsed]="pagesPanelCollapsed()"
+    [class.editor__body--properties-collapsed]="propertiesPanelCollapsed()">
+    @if (docName()) {
+      <aside id="editor-pages-panel" class="editor__sidebar" [class.editor__sidebar--collapsed]="pagesPanelCollapsed()"
+        aria-label="Pages">
+        @if (pagesPanelCollapsed()) {
+        <button type="button" class="editor__panel-rail" (click)="togglePagesPanel()" [attr.aria-expanded]="false"
+          aria-controls="editor-pages-panel" title="Expand pages panel" aria-label="Expand pages panel">
+          <i class="fa-solid fa-layer-group"></i>
+        </button>
+        } @else {
+        <app-pages-panel (collapse)="togglePagesPanel()" (pageSelect)="onPageSelectFromPanel($event)" />
+        }
+      </aside>
+    }
+
+    <section class="editor__workspace" [class.editor__workspace--landing]="!docName()">
+      @if (loading()) {
+      <div class="editor__loading">
+        <i class="fa-solid fa-spinner fa-spin"></i> Loading document…
+      </div>
+      } @else if (!docName()) {
+      <div class="editor__landing" [class.editor__landing--centered]="recentEntries().length === 0">
+        <div class="editor__landing-card">
+          <div class="editor__landing-badge">
+            <i class="fa-solid fa-file-pdf"></i>
+          </div>
+          <h1 class="editor__landing-title">Open PDF to Start Editing</h1>
+          <p class="editor__landing-subtitle">
+            Annotate, add text, draw, sign, and organize pages privately in your browser.
+          </p>
+
+          <div class="editor__landing-dropzone">
+            <app-file-dropzone [multiple]="false" label="Tap to Choose or Drop PDF Here" />
+          </div>
+
+          <div class="editor__landing-privacy">
+            <i class="fa-solid fa-shield-halved"></i>
+            <span><strong>100% Private</strong> · Files stay on your device and are never uploaded.</span>
+          </div>
+
+          <div class="editor__landing-features">
+            <span class="editor__feat-pill"><i class="fa-solid fa-pen-nib"></i> Draw & Pen</span>
+            <span class="editor__feat-pill"><i class="fa-solid fa-font"></i> Add Text</span>
+            <span class="editor__feat-pill"><i class="fa-solid fa-signature"></i> Signatures</span>
+            <span class="editor__feat-pill"><i class="fa-solid fa-highlighter"></i> Highlight</span>
+            <span class="editor__feat-pill"><i class="fa-solid fa-shapes"></i> Shapes</span>
+            <span class="editor__feat-pill"><i class="fa-solid fa-layer-group"></i> Organize Pages</span>
+          </div>
         </div>
-        <span class="side-head__count">{{ totalPages() }}</span>
-      </header>
 
-      @if (docName()) {
-        <section class="side-card">
-          <div class="side-actions">
-            <button
-              type="button"
-              class="icon-btn"
-              (click)="rotateLeft()"
-              [disabled]="selectedCount() === 0"
-              title="Rotate left"
-              aria-label="Rotate selected pages left"
-            >
-              <i class="fa-solid fa-rotate-left"></i>
-            </button>
-            <button
-              type="button"
-              class="icon-btn"
-              (click)="rotateRight()"
-              [disabled]="selectedCount() === 0"
-              title="Rotate right"
-              aria-label="Rotate selected pages right"
-            >
-              <i class="fa-solid fa-rotate-right"></i>
-            </button>
-            <button
-              type="button"
-              class="icon-btn"
-              (click)="duplicateSelected()"
-              [disabled]="selectedCount() === 0"
-              title="Duplicate"
-              aria-label="Duplicate selected pages"
-            >
-              <i class="fa-solid fa-copy"></i>
-            </button>
-            <button
-              type="button"
-              class="icon-btn icon-btn--danger"
-              (click)="deleteSelected()"
-              [disabled]="selectedCount() === 0"
-              title="Delete"
-              aria-label="Delete selected pages"
-            >
-              <i class="fa-solid fa-trash"></i>
-            </button>
-            <button
-              type="button"
-              class="icon-btn"
-              (click)="extractSelected()"
-              [disabled]="selectedCount() === 0"
-              title="Extract to new PDF"
-              aria-label="Extract selected pages to a new PDF"
-            >
-              <i class="fa-solid fa-file-export"></i>
-            </button>
-          </div>
-          <div class="side-selection">
-            <span class="side-hint">
-              {{ selectedCount() ? selectedCount() + ' selected' : 'No selection' }}
-            </span>
-            <div class="side-selection-btns">
-              <button
-                type="button"
-                class="editor__chip"
-                (click)="selectAll()"
-                [disabled]="totalPages() === 0"
-              >
-                All
-              </button>
-              <button
-                type="button"
-                class="editor__chip"
-                (click)="clearSelection()"
-                [disabled]="selectedCount() === 0"
-              >
-                Clear
-              </button>
+        @if (recentEntries().length > 0) {
+          <div class="editor__recent-panel">
+            <div class="editor__recent-panel-header">
+              <div class="editor__recent-panel-title-group">
+                <div class="editor__recent-panel-icon">
+                  <i class="fa-solid fa-clock-rotate-left"></i>
+                </div>
+                <div>
+                  <div class="editor__recent-panel-title-row">
+                    <h2 class="editor__recent-panel-title">Recent Documents</h2>
+                    <span class="editor__recent-count-badge">{{ filteredRecentEntries().length }}</span>
+                  </div>
+                  <p class="editor__recent-panel-subtitle">
+                    Stored locally on this device. Re-open anytime with all edits preserved.
+                  </p>
+                </div>
+              </div>
+
+              <div class="editor__recent-panel-actions">
+                @if (recentEntries().length > 2) {
+                  <div class="editor__recent-search-wrap">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input
+                      type="text"
+                      placeholder="Search recent files..."
+                      [value]="recentSearch()"
+                      (input)="onRecentSearchInput($any($event.target).value)"
+                    />
+                    @if (recentSearch()) {
+                      <button
+                        type="button"
+                        class="editor__recent-search-clear"
+                        (click)="onRecentSearchInput('')"
+                        title="Clear search"
+                        aria-label="Clear search"
+                      >
+                        <i class="fa-solid fa-xmark"></i>
+                      </button>
+                    }
+                  </div>
+                }
+                <a class="pf-btn pf-btn--ghost pf-btn--sm editor__recent-action-btn" routerLink="/recent" title="View all in history">
+                  <i class="fa-solid fa-list-check"></i>
+                  <span>View all</span>
+                </a>
+                <button
+                  type="button"
+                  class="pf-btn pf-btn--ghost pf-btn--sm editor__recent-action-btn pf-text-danger"
+                  (click)="clearRecentEntries()"
+                  title="Clear all recent history"
+                  aria-label="Clear all recent history"
+                >
+                  <i class="fa-solid fa-trash-can"></i>
+                  <span>Clear</span>
+                </button>
+              </div>
             </div>
-          </div>
-        </section>
 
-        <div class="editor__pages">
-          @for (page of pagesList(); track page.id) {
+            @if (filteredRecentEntries().length === 0) {
+              <div class="editor__recent-empty">
+                <i class="fa-solid fa-magnifying-glass editor__recent-empty-icon"></i>
+                <p class="editor__recent-empty-text">No recent files match "<strong>{{ recentSearch() }}</strong>"</p>
+                <button type="button" class="pf-btn pf-btn--ghost pf-btn--sm" (click)="onRecentSearchInput('')">
+                  Clear search
+                </button>
+              </div>
+            } @else {
+              <div class="editor__recent-grid">
+                @for (entry of filteredRecentEntries(); track entry.id) {
+                  <div
+                    class="editor__recent-card"
+                    [class.editor__recent-card--pinned]="entry.pinned"
+                    (click)="openRecentFile(entry)"
+                    (keydown.enter)="openRecentFile(entry)"
+                    role="button"
+                    tabindex="0"
+                    title="Open {{ entry.name }}"
+                  >
+                    <div class="editor__recent-card-icon">
+                      <i class="fa-solid fa-file-pdf"></i>
+                    </div>
+                    <div class="editor__recent-card-info">
+                      <div class="editor__recent-card-title-row">
+                        <span class="editor__recent-card-name" [title]="entry.name">{{ entry.name }}</span>
+                        @if (entry.pinned) {
+                          <i class="fa-solid fa-thumbtack editor__recent-card-pinned" title="Pinned to top"></i>
+                        }
+                      </div>
+                      <div class="editor__recent-card-meta-row">
+                        @if (entry.pageCount) {
+                          <span class="editor__recent-card-meta">{{ entry.pageCount }} {{ entry.pageCount === 1 ? 'page' : 'pages' }}</span>
+                          <span class="editor__recent-dot">•</span>
+                        }
+                        <span class="editor__recent-card-meta">{{ formatBytes(entry.sizeBytes) }}</span>
+                        <span class="editor__recent-dot">•</span>
+                        <span class="editor__recent-card-meta">{{ getRelativeTime(entry.lastOpenedAt) }}</span>
+                        @if (entry.name === docName() && state.modified()) {
+                          <span class="editor__recent-card-unsaved">
+                            <i class="fa-solid fa-circle"></i> Unsaved
+                          </span>
+                        }
+                      </div>
+                    </div>
+                    <div class="editor__recent-card-actions" (click)="$event.stopPropagation()">
+                      <button
+                        type="button"
+                        class="editor__recent-card-btn"
+                        [class.editor__recent-card-btn--active]="entry.pinned"
+                        (click)="togglePin(entry.id, $event)"
+                        [title]="entry.pinned ? 'Unpin' : 'Pin to top'"
+                        aria-label="Pin file"
+                      >
+                        <i class="fa-solid fa-thumbtack"></i>
+                      </button>
+                      <button
+                        type="button"
+                        class="editor__recent-card-btn editor__recent-card-btn--remove"
+                        (click)="removeRecentEntry(entry.id); $event.stopPropagation()"
+                        title="Remove from recent"
+                        aria-label="Remove from recent"
+                      >
+                        <i class="fa-solid fa-trash-can"></i>
+                      </button>
+                    </div>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+      } @else {
+      <div
+        class="editor__canvas-stage"
+        #stage
+        [class.editor__canvas-stage--hand]="state.tool() === 'hand' || isSpacePanning()"
+        [class.editor__canvas-stage--panning]="isPanning()"
+        (pointerdown)="onStagePointerDown($event)"
+        (pointermove)="onStagePointerMove($event)"
+        (pointerup)="onStagePointerUp($event)"
+        (pointercancel)="onStagePointerUp($event)"
+        (pointerleave)="onStagePointerLeave($event)"
+        (wheel)="onWorkspaceWheel($event)"
+        (scroll)="onStageScroll($event)"
+      >
+        <div class="editor__pages-stack" #pagesStack>
+          @for (page of pagesStore.pages(); track page.id; let idx = $index) {
             <div
-              class="editor__thumb-wrap"
-              draggable="true"
-              (dragstart)="onDragStart(page.id)"
-              (dragover)="onDragOver($event)"
-              (drop)="onDrop(page.id)"
-              (click)="selectPage(page.id, $event)"
+              class="editor__page-wrapper"
+              [id]="'page-wrapper-' + page.id"
+              [attr.data-page-id]="page.id"
+              [attr.data-page-index]="idx"
+              [class.editor__page-wrapper--active]="pagesStore.currentId() === page.id"
+              (pointerdown)="onPagePointerDown(page.id)"
             >
-              <app-page-thumbnail
-                [pageIndex]="page.sourceIndex"
-                [rotation]="page.rotation"
-                [active]="pagesStore.isSelected(page.id)"
-                [current]="pagesStore.currentId() === page.id"
-              ></app-page-thumbnail>
+              <div
+                class="editor__page-frame"
+                [style.width.px]="getPageDisplaySize(page).width"
+                [style.height.px]="getPageDisplaySize(page).height"
+              >
+                <app-pdf-page
+                  [pageIndex]="page.sourceIndex"
+                  [scale]="getPageDisplaySize(page).scale"
+                  [rotation]="page.rotation"
+                  [isFullQuality]="isPageInRenderWindow(idx)"
+                ></app-pdf-page>
+                @if (hasSearchMatchesForPage(page.id)) {
+                  <div class="editor__search-highlights" aria-hidden="true">
+                    @for (m of getSearchMatchesForPage(page.id); track m.id) {
+                      <div
+                        class="editor__search-highlight"
+                        [class.editor__search-highlight--active]="isMatchActive(m.id)"
+                        [style.left.px]="m.normRect.x * getPageDisplaySize(page).width"
+                        [style.top.px]="m.normRect.y * getPageDisplaySize(page).height"
+                        [style.width.px]="m.normRect.width * getPageDisplaySize(page).width"
+                        [style.height.px]="m.normRect.height * getPageDisplaySize(page).height"
+                      ></div>
+                    }
+                  </div>
+                }
+                @if (isPageInRenderWindow(idx)) {
+                  <app-editor-overlay
+                    [pageId]="page.id"
+                    [pageIndex]="page.sourceIndex"
+                    [annotations]="state.annotationsFor(page.id)"
+                    [tool]="state.tool()"
+                    [selectedId]="state.selectedId()"
+                    [width]="getPageDisplaySize(page).width"
+                    [height]="getPageDisplaySize(page).height"
+                  ></app-editor-overlay>
+                }
+                <!-- Content-Edit: invisible hit-test layer -->
+                @if (isContentEditMode()) {
+                  <div
+                    class="editor__content-edit-hittest"
+                    [attr.aria-label]="'Click text to edit'"
+                    (pointerdown)="$event.stopPropagation()"
+                    (click)="onPageCanvasClick($event, page)"
+                  ></div>
+                }
+                <!-- Content-Edit: original text mask to cover old text on canvas -->
+                @for (run of textEdit.getEditedRunsForPage(page.sourceIndex); track run.id) {
+                  <div
+                    class="editor__content-edit-mask"
+                    [ngStyle]="getRunOriginalMaskStyles(run, page)"
+                  ></div>
+                }
+                <!-- Content-Edit: persistent display of committed edited runs -->
+                @for (run of textEdit.getEditedRunsForPage(page.sourceIndex); track run.id) {
+                  @if (textEdit.activeRunId() !== run.id) {
+                    <div
+                      class="editor__content-edit-patch"
+                      [ngStyle]="getRunPatchStyles(run, page)"
+                      (click)="onPatchClick($event, run, page)"
+                    >{{ run.text }}</div>
+                  }
+                }
+                <!-- Content-Edit: text-run editing overlay (one run at a time) -->
+                @if (isContentEditMode() && pagesStore.currentId() === page.id) {
+                  @if (activeTextRun(); as run) {
+                    <div
+                      class="editor__content-edit-mask"
+                      [ngStyle]="getActiveRunMaskStyles(run, page)"
+                    ></div>
+                    <app-text-edit-overlay
+                      [run]="run"
+                      [scale]="getPageDisplaySize(page).scale"
+                      [pageHeightPt]="currentPageHeightPt()"
+                      (committed)="onTextRunCommitted($event)"
+                      (cancelled)="onTextRunCancelled()"
+                    ></app-text-edit-overlay>
+                  }
+                }
+              </div>
             </div>
           }
         </div>
-      } @else {
-        <p class="side-empty">
-          <i class="fa-regular fa-file-lines"></i>
-          No document loaded.
-        </p>
+      </div>
       }
-    </aside>
 
-    <section class="editor__workspace">
-      @if (loading()) {
-        <div class="editor__loading">
-          <i class="fa-solid fa-spinner fa-spin"></i> Loading document…
-        </div>
-      } @else if (!docName()) {
-        <div class="editor__drop">
-          <app-file-dropzone
-            [multiple]="false"
-            label="Open a PDF to start editing"
-          />
-          <p class="editor__privacy">
-            <i class="fa-solid fa-lock"></i> Your file stays on this device.
-          </p>
-        </div>
-      } @else {
-        <div class="editor__canvas-stage" #stage>
-          <div
-            class="editor__page-frame"
-            [style.width.px]="displaySize()?.width"
-            [style.height.px]="displaySize()?.height"
+      @if (state.tool() === 'eraser' && state.eraserSizePreviewActive()) {
+        <div class="editor__eraser-preview-hub">
+          <svg
+            [attr.width]="eraserSvgSize()"
+            [attr.height]="eraserSvgSize()"
+            [attr.viewBox]="eraserSvgViewBox()"
           >
-            <app-pdf-page
-              [pageIndex]="currentSourceIndex()"
-              [scale]="displaySize()?.scale ?? 1"
-              [rotation]="currentRotation()"
-            ></app-pdf-page>
-            <app-editor-overlay
-              [pageId]="currentPageId() ?? ''"
-              [pageIndex]="currentSourceIndex()"
-              [annotations]="currentAnnotations()"
-              [tool]="state.tool()"
-              [selectedId]="state.selectedId()"
-              [width]="displaySize()?.width ?? 0"
-              [height]="displaySize()?.height ?? 0"
-            ></app-editor-overlay>
-            <app-editor-text-layer
-              [pageIndex]="currentSourceIndex()"
-              [scale]="displaySize()?.scale ?? 1"
-              [rotation]="currentRotation()"
-              [enabled]="state.textEditEnabled()"
-            ></app-editor-text-layer>
-          </div>
+            <!-- Tool nominal size boundary ring (when different from cut size) -->
+            @if (state.eraserTolerance() !== 1) {
+              <circle
+                [attr.r]="state.eraserSize() / 2"
+                fill="none"
+                stroke="#94a3b8"
+                stroke-width="1.2"
+                stroke-dasharray="2 2"
+              />
+            }
+            <!-- Actual cut footprint -->
+            <circle
+              [attr.r]="(state.eraserSize() / 2) * state.eraserTolerance()"
+              fill="rgba(239, 68, 68, 0.18)"
+              stroke="#ef4444"
+              stroke-width="1.5"
+              stroke-dasharray="3 2"
+            />
+            <!-- Center dot -->
+            <circle r="2" fill="#ef4444" />
+          </svg>
         </div>
       }
     </section>
 
-    <aside class="editor__properties" aria-label="Properties">
-      <app-properties-panel [docName]="docName()" />
-    </aside>
+    @if (docName()) {
+      <aside id="editor-properties-panel" class="editor__properties"
+        [class.editor__properties--collapsed]="propertiesPanelCollapsed()" aria-label="Properties">
+        @if (propertiesPanelCollapsed()) {
+        <button type="button" class="editor__panel-rail" (click)="togglePropertiesPanel()" [attr.aria-expanded]="false"
+          aria-controls="editor-properties-panel" title="Expand properties panel" aria-label="Expand properties panel">
+          <i class="fa-solid fa-sliders"></i>
+        </button>
+        } @else {
+        <app-properties-panel (collapse)="togglePropertiesPanel()" />
+        }
+      </aside>
+    }
   </div>
 
+  <!-- Mobile Properties Bottom Sheet -->
+  @if (state.mobilePropertiesOpen()) {
+    <div class="editor__bottomsheet-backdrop" (click)="closePropertiesSheet()"></div>
+    <div class="editor__bottomsheet" role="dialog" aria-modal="true" aria-label="Properties Sheet">
+      <div class="editor__bottomsheet-handle-bar" (click)="closePropertiesSheet()">
+        <div class="editor__bottomsheet-handle"></div>
+      </div>
+      <div class="editor__bottomsheet-header">
+        <span class="editor__bottomsheet-title">
+          <i class="fa-solid fa-sliders"></i> Tool Properties
+        </span>
+        <button type="button" class="icon-btn editor__bottomsheet-close" (click)="closePropertiesSheet()" aria-label="Close properties sheet">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="editor__bottomsheet-content">
+        <app-properties-panel (collapse)="closePropertiesSheet()" />
+      </div>
+    </div>
+  }
+
+  <!-- Mobile Pages Bottom Sheet -->
+  @if (state.mobilePagesOpen()) {
+    <div class="editor__bottomsheet-backdrop" (click)="closePagesSheet()"></div>
+    <div class="editor__bottomsheet editor__bottomsheet--pages" role="dialog" aria-modal="true" aria-label="Pages Sheet">
+      <div class="editor__bottomsheet-handle-bar" (click)="closePagesSheet()">
+        <div class="editor__bottomsheet-handle"></div>
+      </div>
+      <div class="editor__bottomsheet-header">
+        <span class="editor__bottomsheet-title">
+          <i class="fa-solid fa-layer-group"></i> Document Pages
+        </span>
+        <button type="button" class="icon-btn editor__bottomsheet-close" (click)="closePagesSheet()" aria-label="Close pages sheet">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="editor__bottomsheet-content">
+        <app-pages-panel (collapse)="closePagesSheet()" (pageSelect)="onPageSelectFromPanel($event)" />
+      </div>
+    </div>
+  }
+
+  <!-- Mobile Shapes Bottom Sheet -->
+  @if (shapeMenuOpen()) {
+    <div class="editor__bottomsheet-backdrop d-md-none" (click)="closeShapeMenu()"></div>
+    <div class="editor__bottomsheet editor__bottomsheet--shapes d-md-none" (click)="$event.stopPropagation()" role="dialog" aria-modal="true" aria-label="Shapes Selection Sheet">
+      <div class="editor__bottomsheet-handle-bar" (click)="closeShapeMenu()">
+        <div class="editor__bottomsheet-handle"></div>
+      </div>
+      <div class="editor__bottomsheet-header">
+        <span class="editor__bottomsheet-title">
+          <i class="fa-solid fa-shapes"></i> Choose Shape ({{ shapeDefinitions.length }} Shapes)
+        </span>
+        <button type="button" class="icon-btn editor__bottomsheet-close" (click)="closeShapeMenu()" aria-label="Close shapes sheet">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="editor__bottomsheet-content">
+        <div class="pf-shape-sheet__search">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input
+            type="text"
+            [placeholder]="'Search ' + shapeDefinitions.length + ' shapes...'"
+            [value]="shapeSearchQuery()"
+            (input)="shapeSearchQuery.set($any($event.target).value)"
+          />
+          @if (shapeSearchQuery()) {
+            <button type="button" class="pf-shape-sheet__clear" (click)="shapeSearchQuery.set('')">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          }
+        </div>
+
+        <div class="pf-shape-sheet__tabs">
+          <button
+            type="button"
+            class="pf-shape-sheet__tab"
+            [class.pf-shape-sheet__tab--active]="!shapeSearchQuery() && selectedShapeCategory() === 'all'"
+            (click)="$event.stopPropagation(); shapeSearchQuery.set(''); selectedShapeCategory.set('all')"
+          >
+            All ({{ shapeDefinitions.length }})
+          </button>
+          @for (cat of shapeCategories; track cat.id) {
+            <button
+              type="button"
+              class="pf-shape-sheet__tab"
+              [class.pf-shape-sheet__tab--active]="!shapeSearchQuery() && selectedShapeCategory() === cat.id"
+              (click)="$event.stopPropagation(); shapeSearchQuery.set(''); selectedShapeCategory.set(cat.id)"
+              [title]="cat.label"
+            >
+              <i [class]="cat.icon"></i> {{ cat.label }}
+            </button>
+          }
+        </div>
+
+        <div class="pf-shape-sheet__grid">
+          @for (shape of filteredShapes(); track shape.id) {
+            <button
+              type="button"
+              class="pf-shape-sheet__item"
+              [class.pf-shape-sheet__item--active]="state.shapeKind() === shape.id"
+              (click)="selectShapeKind(shape.id)"
+              [title]="shape.label"
+              [attr.aria-label]="shape.label"
+            >
+              <i [class]="shape.icon"></i>
+              <span class="pf-shape-sheet__item-label">{{ shape.label }}</span>
+            </button>
+          }
+          @if (filteredShapes().length === 0) {
+            <div class="pf-shape-sheet__empty">No shapes matching "{{ shapeSearchQuery() }}"</div>
+          }
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- Mobile Icons Bottom Sheet -->
+  @if (iconMenuOpen()) {
+    <div class="editor__bottomsheet-backdrop d-md-none" (click)="closeIconMenu()"></div>
+    <div class="editor__bottomsheet editor__bottomsheet--shapes d-md-none" (click)="$event.stopPropagation()" role="dialog" aria-modal="true" aria-label="Icons Selection Sheet">
+      <div class="editor__bottomsheet-handle-bar" (click)="closeIconMenu()">
+        <div class="editor__bottomsheet-handle"></div>
+      </div>
+      <div class="editor__bottomsheet-header">
+        <span class="editor__bottomsheet-title">
+          <i class="fa-solid fa-icons"></i> Choose Icon ({{ iconDefinitions.length }} Icons)
+        </span>
+        <button type="button" class="icon-btn editor__bottomsheet-close" (click)="closeIconMenu()" aria-label="Close icons sheet">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="editor__bottomsheet-content">
+        <div class="pf-shape-sheet__search">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input
+            type="text"
+            [placeholder]="'Search ' + iconDefinitions.length + ' icons...'"
+            [value]="iconSearchQuery()"
+            (input)="iconSearchQuery.set($any($event.target).value)"
+          />
+          @if (iconSearchQuery()) {
+            <button type="button" class="pf-shape-sheet__clear" (click)="iconSearchQuery.set('')">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          }
+        </div>
+
+        <div class="pf-shape-sheet__tabs">
+          <button
+            type="button"
+            class="pf-shape-sheet__tab"
+            [class.pf-shape-sheet__tab--active]="!iconSearchQuery() && selectedIconCategory() === 'all'"
+            (click)="$event.stopPropagation(); iconSearchQuery.set(''); selectedIconCategory.set('all')"
+          >
+            All ({{ iconDefinitions.length }})
+          </button>
+          @for (cat of iconCategories; track cat.id) {
+            <button
+              type="button"
+              class="pf-shape-sheet__tab"
+              [class.pf-shape-sheet__tab--active]="!iconSearchQuery() && selectedIconCategory() === cat.id"
+              (click)="$event.stopPropagation(); iconSearchQuery.set(''); selectedIconCategory.set(cat.id)"
+              [title]="cat.label"
+            >
+              <i [class]="cat.icon"></i> {{ cat.label }}
+            </button>
+          }
+        </div>
+
+        <div class="pf-shape-sheet__grid">
+          @for (icon of filteredIcons(); track icon.id) {
+            <button
+              type="button"
+              class="pf-shape-sheet__item"
+              [class.pf-shape-sheet__item--active]="state.iconKind() === icon.id"
+              (click)="selectIconKind(icon.id)"
+              [title]="icon.label"
+              [attr.aria-label]="icon.label"
+            >
+              <i [class]="icon.icon"></i>
+              <span class="pf-shape-sheet__item-label">{{ icon.label }}</span>
+            </button>
+          }
+          @if (filteredIcons().length === 0) {
+            <div class="pf-shape-sheet__empty">No icons matching "{{ iconSearchQuery() }}"</div>
+          }
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- Hidden Image File Input for Image Tool -->
   <input
-    #imageInput
+    #imageFileInput
     type="file"
-    accept="image/png,image/jpeg,image/webp"
-    hidden
-    (change)="onImageFile($event)"
+    accept="image/png, image/jpeg, image/webp, image/svg+xml"
+    style="display: none"
+    (change)="onImageFileSelected($event)"
   />
 
-  @if (signatureOpen()) {
-    <app-signature-dialog
-      (result)="onSignatureResult($event)"
-      (digitalResult)="onDigitalResult($event)"
+  <!-- Signature Modal -->
+  @if (isSignatureModalOpen()) {
+    <app-signature-modal
+      (signatureSelected)="onSignatureSelected($event)"
+      (closed)="isSignatureModalOpen.set(false)"
     />
   }
 
-  @if (stampOpen()) {
-    <app-stamp-dialog (result)="onStampResult($event)" />
+  <!-- Stamp Modal -->
+  @if (isStampModalOpen()) {
+    <app-stamp-modal
+      (stampSelected)="onStampSelected($event)"
+      (closed)="isStampModalOpen.set(false)"
+    />
+  }
+
+  <!-- Export Options Modal -->
+  @if (isExportModalOpen()) {
+    <app-export-modal
+      [defaultFilename]="defaultExportFilename()"
+      [totalPages]="totalPages()"
+      [currentPage]="pagesStore.currentIndex() + 1"
+      [hasSelectedPages]="pagesStore.selectedCount() > 0"
+      [selectedPagesCount]="pagesStore.selectedCount()"
+      [isExporting]="exporting()"
+      [exportProgress]="exportProgress()"
+      (confirmExport)="confirmExportModal($event)"
+      (cancel)="closeExportModal()"
+    />
   }
 </div>

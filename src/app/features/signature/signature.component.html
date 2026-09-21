@@ -1,17 +1,23 @@
 <section class="tool-page">
   <div class="pf-container">
+    <app-breadcrumbs [items]="seoConfig.breadcrumbs"></app-breadcrumbs>
+
     <header class="tool-page__header">
-      <a class="tool-page__back" routerLink="/tools"><i class="fa-solid fa-arrow-left"></i> Tools</a>
-      <h1><i class="fa-solid fa-signature tool-page__icon"></i> Signature</h1>
-      <p class="pf-text-muted">Create a signature to place on your PDFs — locally.</p>
+      <h1><i class="fa-solid fa-signature tool-page__icon"></i> Signature Creator</h1>
+      <p class="pf-text-muted">Draw, type, or upload your signature to place on documents — 100% locally in your browser.</p>
     </header>
 
     <div class="tool-page__body">
       <div class="sig-tabs">
-        <button type="button" class="sig-tab" [class.sig-tab--active]="tab() === 'draw'" (click)="setTab('draw')">Draw</button>
-        <button type="button" class="sig-tab" [class.sig-tab--active]="tab() === 'type'" (click)="setTab('type')">Type</button>
-        <button type="button" class="sig-tab" [class.sig-tab--active]="tab() === 'upload'" (click)="setTab('upload')">Upload</button>
-        <button type="button" class="sig-tab" [class.sig-tab--active]="tab() === 'digital'" (click)="setTab('digital')">Digital ID</button>
+        <button type="button" class="sig-tab" [class.sig-tab--active]="tab() === 'draw'" (click)="setTab('draw')">
+          <i class="fa-solid fa-pen-nib"></i> Draw
+        </button>
+        <button type="button" class="sig-tab" [class.sig-tab--active]="tab() === 'type'" (click)="setTab('type')">
+          <i class="fa-solid fa-font"></i> Type
+        </button>
+        <button type="button" class="sig-tab" [class.sig-tab--active]="tab() === 'upload'" (click)="setTab('upload')">
+          <i class="fa-solid fa-upload"></i> Upload
+        </button>
       </div>
 
       @if (tab() === 'draw') {
@@ -25,73 +31,40 @@
             (pointerleave)="endDraw()"
           ></canvas>
           <div class="sig-pad__actions">
-            <button type="button" class="pf-btn pf-btn--ghost" (click)="clearDraw()">
+            <button type="button" class="pf-btn pf-btn--ghost pf-btn--sm" (click)="clearDraw()">
               <i class="fa-solid fa-eraser"></i> Clear
             </button>
           </div>
         </div>
       } @else if (tab() === 'type') {
         <div class="sig-type">
-          <input class="pf-input sig-type__input" type="text" [value]="typed()" (input)="typed.set($any($event.target).value)" />
-          <div class="sig-type__preview" [ngClass]="'sig-font--' + font()">{{ typed() }}</div>
+          <input class="pf-input sig-type__input" type="text" [value]="typed()" (input)="typed.set($any($event.target).value)" placeholder="Type your full name" />
+          <div class="sig-type__preview" [ngClass]="'sig-font--' + font()">{{ typed() || 'Signature Preview' }}</div>
           <div class="sig-type__fonts">
             <button type="button" class="sig-font-btn" [class.sig-font-btn--active]="font() === 'cursive'" (click)="font.set('cursive')">Cursive</button>
             <button type="button" class="sig-font-btn" [class.sig-font-btn--active]="font() === 'serif'" (click)="font.set('serif')">Serif</button>
             <button type="button" class="sig-font-btn" [class.sig-font-btn--active]="font() === 'sans'" (click)="font.set('sans')">Sans</button>
           </div>
         </div>
-      } @else if (tab() === 'upload') {
-        <div class="sig-upload">
-          <input
-            class="pf-input"
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            (change)="onUpload($event)"
-          />
-          @if (uploadDataUrl()) {
-            <img class="sig-upload__preview" [src]="uploadDataUrl()!" alt="Uploaded signature" />
-          }
-        </div>
       } @else {
-        <div class="sig-upload">
-          <p class="pf-text-muted">
-            Cryptographic signing embeds a real PKCS#7 digital signature into the PDF using your
-            certificate. Nothing leaves this device.
-          </p>
-          <label class="pf-dialog__field">
-            <span>Certificate (.p12 / .pfx)</span>
-            <input class="pf-input" type="file" accept=".p12,.pfx,application/x-pkcs12" (change)="onCertUpload($event)" />
-          </label>
-          @if (certName()) {
-            <p class="pf-dialog__hint">Certificate: {{ certName() }}</p>
-          }
-          <label class="pf-dialog__field">
-            <span>Password</span>
-            <input class="pf-input" type="password" [ngModel]="password()" (ngModelChange)="password.set($event)" />
-          </label>
-          <label class="pf-dialog__field">
-            <span>Reason</span>
-            <input class="pf-input" type="text" [ngModel]="reason()" (ngModelChange)="reason.set($event)" />
-          </label>
-          <label class="pf-dialog__field">
-            <span>Location</span>
-            <input class="pf-input" type="text" [ngModel]="location()" (ngModelChange)="location.set($event)" />
-          </label>
-          @if (certError()) {
-            <p class="pf-dialog__error">{{ certError() }}</p>
-          }
-        </div>
+        <app-file-dropzone [multiple]="false" accept="image/*" label="Upload a signature image" (filesLoaded)="onUploadLoadedFiles($event)" />
       }
 
       <div class="tool-page__footer">
-        <button class="pf-btn pf-btn--primary" type="button" (click)="addToPdf()">
-          <i class="fa-solid fa-plus"></i> Add to PDF
+        <button class="pf-btn pf-btn--outline" type="button" (click)="downloadSignature()">
+          <i class="fa-solid fa-download"></i> Download PNG
+        </button>
+        <button class="pf-btn pf-btn--primary" type="button" (click)="openEditor()">
+          <i class="fa-solid fa-pen-to-square"></i> Open PDF Editor
         </button>
       </div>
     </div>
 
     <p class="tool-page__privacy">
-      <i class="fa-solid fa-lock"></i> Signatures never leave your device.
+      <i class="fa-solid fa-lock"></i> Privacy-first: Signatures never leave your device.
     </p>
+
+    <!-- Comprehensive On-Page SEO Section -->
+    <app-tool-seo-content [config]="seoConfig"></app-tool-seo-content>
   </div>
 </section>
