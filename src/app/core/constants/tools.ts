@@ -72,13 +72,6 @@ export const EDITOR_TOOLS: EditorTool[] = [
     group: 'content',
   },
   {
-    id: 'content-edit',
-    label: 'Edit PDF Text',
-    icon: 'fa-solid fa-i-cursor',
-    shortcut: 'Shift+E',
-    group: 'content',
-  },
-  {
     id: 'pen',
     label: 'Pen',
     icon: 'fa-solid fa-pen',
