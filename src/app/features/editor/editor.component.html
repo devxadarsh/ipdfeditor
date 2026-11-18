@@ -1249,6 +1249,60 @@
     </div>
   }
 
+  <!-- Native PDF Text Edit Banner -->
+  @if (docName() && contentEditMode()) {
+    <div class="editor__native-banner" role="status" aria-live="polite">
+      <div class="editor__native-banner-content">
+        <i class="fa-solid fa-i-cursor"></i>
+        <span>
+          <strong>Edit PDF text</strong>
+          <span class="d-none d-md-inline"> — click any text on the page to edit it directly.</span>
+          <span class="d-inline d-md-none"> — tap text to edit.</span>
+        </span>
+        @if (textEdit.loading()) {
+          <span class="editor__native-banner-state">
+            <i class="fa-solid fa-spinner fa-spin"></i> Preparing engine…
+          </span>
+        } @else if (textEdit.applying()) {
+          <span class="editor__native-banner-state">
+            <i class="fa-solid fa-spinner fa-spin"></i> Applying…
+          </span>
+        }
+      </div>
+      <div class="editor__native-banner-actions">
+        <button
+          type="button"
+          class="editor__native-banner-btn"
+          (click)="nativeUndo()"
+          [disabled]="!textEdit.canUndo() || textEdit.applying()"
+          title="Undo text edit (Ctrl/Cmd+Z)"
+          aria-label="Undo text edit"
+        >
+          <i class="fa-solid fa-rotate-left"></i>
+        </button>
+        <button
+          type="button"
+          class="editor__native-banner-btn"
+          (click)="nativeRedo()"
+          [disabled]="!textEdit.canRedo() || textEdit.applying()"
+          title="Redo text edit (Ctrl/Cmd+Shift+Z)"
+          aria-label="Redo text edit"
+        >
+          <i class="fa-solid fa-rotate-right"></i>
+        </button>
+        <button
+          type="button"
+          class="editor__native-banner-exit"
+          (click)="exitContentEditMode()"
+          title="Exit text edit mode (Esc)"
+          aria-label="Exit text edit mode"
+        >
+          <i class="fa-solid fa-xmark"></i> Done
+        </button>
+      </div>
+    </div>
+  }
+
   <!-- Floating Placement Guidance Banner (Image / Stamp) -->
   @if (docName() && state.pendingPlacement(); as pending) {
     <div class="editor__placement-banner" role="status">
@@ -1659,6 +1713,14 @@
                   [rotation]="page.rotation"
                   [isFullQuality]="isPageInRenderWindow(idx)"
                 ></app-pdf-page>
+                @if (isPageInRenderWindow(idx) && isNativePageOverridden(page.sourceIndex)) {
+                  <app-native-page-render
+                    [pageIndex]="page.sourceIndex"
+                    [rotation]="page.rotation"
+                    [scale]="getPageDisplaySize(page).scale"
+                    [version]="nativePageVersion(page.sourceIndex)"
+                  ></app-native-page-render>
+                }
                 @if (hasSearchMatchesForPage(page.id)) {
                   <div class="editor__search-highlights" aria-hidden="true">
                     @for (m of getSearchMatchesForPage(page.id); track m.id) {
@@ -1683,6 +1745,35 @@
                     [width]="getPageDisplaySize(page).width"
                     [height]="getPageDisplaySize(page).height"
                   ></app-editor-overlay>
+                }
+                @if (contentEditMode()) {
+                  <div
+                    class="editor__native-hitlayer"
+                    role="button"
+                    tabindex="-1"
+                    aria-label="Click PDF text to edit it"
+                    title="Click text to edit it"
+                    (click)="onNativeTextClick($event, page)"
+                  ></div>
+                }
+                @if (activeNativeEdit(); as edit) {
+                  @if (edit.pageId === page.id) {
+                    <app-native-text-edit
+                      [style.left.px]="edit.left"
+                      [style.top.px]="edit.top"
+                      [style.width.px]="edit.width"
+                      [style.height.px]="edit.height"
+                      [value]="edit.initialText"
+                      [fontSizePx]="edit.fontSizePx"
+                      [fontFamily]="edit.fontFamily"
+                      [color]="edit.color"
+                      [bold]="edit.bold"
+                      [italic]="edit.italic"
+                      [busy]="textEdit.applying()"
+                      (committed)="onNativeEditCommit($event)"
+                      (cancelled)="onNativeEditCancel()"
+                    ></app-native-text-edit>
+                  }
                 }
               </div>
             </div>
@@ -1732,7 +1823,13 @@
           <i class="fa-solid fa-sliders"></i>
         </button>
         } @else {
-        <app-properties-panel (collapse)="togglePropertiesPanel()" />
+        <app-properties-panel
+          [nativeTarget]="nativeTextTarget()"
+          [nativeBusy]="textEdit.applying()"
+          [nativeFonts]="nativeFonts()"
+          (nativeStyleChange)="onNativeStyleChange($event)"
+          (collapse)="togglePropertiesPanel()"
+        />
         }
       </aside>
     }
@@ -1754,7 +1851,13 @@
         </button>
       </div>
       <div class="editor__bottomsheet-content">
-        <app-properties-panel (collapse)="closePropertiesSheet()" />
+        <app-properties-panel
+          [nativeTarget]="nativeTextTarget()"
+          [nativeBusy]="textEdit.applying()"
+          [nativeFonts]="nativeFonts()"
+          (nativeStyleChange)="onNativeStyleChange($event)"
+          (collapse)="closePropertiesSheet()"
+        />
       </div>
     </div>
   }

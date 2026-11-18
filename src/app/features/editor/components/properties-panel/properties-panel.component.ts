@@ -1,6 +1,7 @@
 import {
   Component,
   inject,
+  input,
   output,
   computed,
   signal,
@@ -37,6 +38,17 @@ import {
 } from '../../../../core/constants/shapes';
 import { PanelSectionComponent } from '../../../../shared/components/panel/panel-section.component';
 import { measureTextAnnotation } from '../../../../core/utilities/text-measure.util';
+import {
+  displayFontName,
+  hexToRgba,
+  rgbaToHex,
+} from '../../../../core/utilities/native-text-style.util';
+import type {
+  NativeTextStyle,
+  NativeTextTargetView,
+  PdfNativeFontFamily,
+} from '../../models/native-text-edit.model';
+import type { PdfNativeFontFamilyInfo } from '../../../../core/services/pdf/text-edit/pdfium-text-edit.types';
 import { EditorStateService } from '../../state/editor-state.service';
 import { EditorPagesService } from '../../state/editor-pages.service';
 
@@ -123,6 +135,74 @@ export class PropertiesPanelComponent {
   private readonly pages = inject(EditorPagesService);
 
   readonly collapse = output<void>();
+
+  /** Native PDF text run currently selected in content-edit mode. */
+  readonly nativeTarget = input<NativeTextTargetView | null>(null);
+  readonly nativeBusy = input<boolean>(false);
+  /** Real font families of the open document (from the PDFium worker). */
+  readonly nativeFonts = input<readonly PdfNativeFontFamilyInfo[]>([]);
+  readonly nativeStyleChange = output<Partial<NativeTextStyle>>();
+
+  /** Faces the selected document family offers, shown under the picker. */
+  readonly nativeFamilyFaces = computed<readonly string[]>(() => {
+    const target = this.nativeTarget();
+    if (!target) {
+      return [];
+    }
+    const key = target.style.fontFamily.toLowerCase();
+    if (key === 'original' || key === 'sans' || key === 'serif' || key === 'mono') {
+      return [];
+    }
+    const family = this.nativeFonts().find(
+      (entry) => entry.family.toLowerCase() === key,
+    );
+    return family ? family.faces.map((face) => face.name) : [];
+  });
+
+  readonly rgbaToHex = rgbaToHex;
+  readonly displayFontName = displayFontName;
+  readonly nativeFontSizes: ReadonlyArray<number> = [
+    6, 8, 9, 10, 11, 12, 14, 16, 18, 21, 24, 32, 48, 72,
+  ];
+
+  emitNativeStyle(patch: Partial<NativeTextStyle>): void {
+    if (this.nativeBusy()) {
+      return;
+    }
+    this.nativeStyleChange.emit(patch);
+  }
+
+  setNativeFamily(value: string): void {
+    this.emitNativeStyle({ fontFamily: value as PdfNativeFontFamily });
+  }
+
+  setNativeFontSize(value: string | number): void {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 1 || n > 400) {
+      return;
+    }
+    this.emitNativeStyle({ fontSize: Math.round(n * 100) / 100 });
+  }
+
+  toggleNativeBold(style: NativeTextStyle): void {
+    this.emitNativeStyle({ bold: !style.bold });
+  }
+
+  toggleNativeItalic(style: NativeTextStyle): void {
+    this.emitNativeStyle({ italic: !style.italic });
+  }
+
+  toggleNativeUnderline(style: NativeTextStyle): void {
+    this.emitNativeStyle({ underline: !style.underline });
+  }
+
+  toggleNativeStrikethrough(style: NativeTextStyle): void {
+    this.emitNativeStyle({ strikethrough: !style.strikethrough });
+  }
+
+  setNativeColor(value: string, alpha = 255): void {
+    this.emitNativeStyle({ color: hexToRgba(value, alpha) });
+  }
 
   readonly activeTool = this.state.tool;
   readonly selectMode = this.state.selectMode;

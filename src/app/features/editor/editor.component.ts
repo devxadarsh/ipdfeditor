@@ -10,6 +10,7 @@ import {
   ChangeDetectorRef,
   OnDestroy,
   HostListener,
+  untracked,
 } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { NgClass, KeyValuePipe } from '@angular/common';
@@ -56,8 +57,24 @@ import {
   PageSize,
   PdfTextSpan,
   PdfPageTextData,
+  NormRect,
   calcMatchNormRect,
+  pdfRectToNormRect,
 } from '../../core/services/pdf/pdf-viewer.service';
+import { PdfTextEditService } from '../../core/services/pdf/text-edit/pdf-text-edit.service';
+import type {
+  PdfNativeFontFamilyInfo,
+  PdfNativeTextEdit,
+  PdfNativeTextRun,
+} from '../../core/services/pdf/text-edit/pdfium-text-edit.types';
+import {
+  isBoldFontName,
+  isItalicFontName,
+} from '../../core/utilities/native-text-style.util';
+import type {
+  NativeTextStyle,
+  NativeTextTargetView,
+} from './models/native-text-edit.model';
 import { PdfExportService } from '../../core/services/pdf/pdf-export.service';
 import { ToastService } from '../../core/services/toast.service';
 import { DialogService } from '../../core/services/dialog.service';
@@ -67,6 +84,8 @@ import { formatRelativeTime } from '../../core/utilities/time.util';
 import { formatBytes } from '../../core/utilities/file.util';
 import { PdfPageComponent } from './components/pdf-page/pdf-page.component';
 import { EditorOverlayComponent } from './components/editor-overlay/editor-overlay.component';
+import { NativeTextEditComponent } from './components/native-text-edit/native-text-edit.component';
+import { NativePageRenderComponent } from './components/native-page-render/native-page-render.component';
 import { PropertiesPanelComponent } from './components/properties-panel/properties-panel.component';
 import { PagesPanelComponent } from './components/pages-panel/pages-panel.component';
 import { EditorPage } from './models/editor-page.model';
@@ -91,6 +110,50 @@ export interface SearchMatch {
   readonly text: string;
 }
 
+interface MappedNativeTextRun extends PdfNativeTextRun {
+  readonly pageId: string;
+  readonly normRect: NormRect;
+}
+
+interface ActiveNativeTextEdit {
+  readonly run: MappedNativeTextRun;
+  readonly pageId: string;
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+  readonly initialText: string;
+  readonly fontSizePx: number;
+  readonly fontFamily: string;
+  readonly color: string;
+  readonly bold: boolean;
+  readonly italic: boolean;
+}
+
+/**
+ * The native text run the properties panel is currently styling.
+ *
+ * `baseMatrix` is captured when the run is selected so every re-apply rebuilds
+ * the object from its original geometry instead of compounding synthetic
+ * styles.
+ */
+interface NativeTextSelection extends NativeTextTargetView {
+  readonly pageId: string;
+  readonly pageIndex: number;
+  readonly objectIndices: readonly number[];
+  readonly baseMatrix: readonly number[];
+  /** Scale baked into `baseMatrix`; the panel works in effective points. */
+  readonly matrixScale: number;
+  /** Object font size (`Tf` operand) before the panel's scale normalisation. */
+  readonly objectFontSize: number;
+  /**
+   * Effective size shown in the panel when the run was selected. Used to send
+   * the untouched object size back verbatim instead of round-tripping it
+   * through the matrix scale on every edit.
+   */
+  readonly effectiveFontSize: number;
+}
+
 @Component({
   selector: 'app-editor',
   standalone: true,
@@ -105,6 +168,8 @@ export interface SearchMatch {
     ExportModalComponent,
     PdfPageComponent,
     EditorOverlayComponent,
+    NativeTextEditComponent,
+    NativePageRenderComponent,
     PropertiesPanelComponent,
     PagesPanelComponent,
     MobileTooltipDirective,
@@ -127,6 +192,38 @@ export class EditorComponent implements OnDestroy {
   private readonly cdr = inject(ChangeDetectorRef);
   readonly pagesStore = inject(EditorPagesService);
   readonly state = inject(EditorStateService);
+  readonly textEdit = inject(PdfTextEditService);
+
+  /** Native PDF text editing (edits real text objects, not overlays). */
+  readonly contentEditMode = computed(() => this.state.tool() === 'content-edit');
+  readonly activeNativeEdit = signal<ActiveNativeTextEdit | null>(null);
+  /** Real fonts of the open document, offered in the PDF Text panel. */
+  readonly nativeFonts = signal<readonly PdfNativeFontFamilyInfo[]>([]);
+  /**
+   * Run shown in the properties panel. Survives closing the inline editor so
+   * typography can be changed right after selecting a sentence.
+   */
+  readonly nativeSelection = signal<NativeTextSelection | null>(null);
+  readonly nativeTextTarget = computed<NativeTextTargetView | null>(() => {
+    const selection = this.nativeSelection();
+    if (!selection || !this.contentEditMode()) {
+      return null;
+    }
+    return {
+      text: selection.text,
+      fontName: selection.fontName,
+      style: selection.style,
+    };
+  });
+  /** Serialises native edits so a blur-commit always lands before a style. */
+  private nativeChain: Promise<void> = Promise.resolve();
+  private readonly nativeRunsByKey = signal<Map<string, MappedNativeTextRun[]>>(
+    new Map(),
+  );
+  /** Pages whose canvas is rendered from the edited PDFium document. */
+  private readonly nativeOverriddenPages = new Set<number>();
+  /** Bumped per page to trigger an in-place PDFium re-render. */
+  readonly nativeRenderVersions = signal<Map<number, number>>(new Map());
 
   readonly exporting = signal(false);
   readonly isFullscreen = signal(false);
@@ -928,6 +1025,8 @@ export class EditorComponent implements OnDestroy {
         return 'fa-solid fa-minus';
       case 'text':
         return 'fa-solid fa-font';
+      case 'content-edit':
+        return 'fa-solid fa-i-cursor';
       case 'drawing':
         return 'fa-solid fa-pen-nib';
       case 'shape':
@@ -997,6 +1096,8 @@ export class EditorComponent implements OnDestroy {
         return 'Cut segments or erase strokes';
       case 'text':
         return 'Tap page to add text';
+      case 'content-edit':
+        return 'Click PDF text to edit it natively';
       case 'shape':
         return 'Drag or tap to place shape';
       case 'icon':
@@ -1361,6 +1462,47 @@ export class EditorComponent implements OnDestroy {
       if (trigger > 0) {
         void this.exportPdf();
       }
+    });
+
+    // Entering/leaving native PDF text-edit mode.
+    effect(() => {
+      const tool = this.state.tool();
+      if (tool !== 'content-edit') {
+        untracked(() => {
+          this.activeNativeEdit.set(null);
+          this.nativeSelection.set(null);
+        });
+        return;
+      }
+      untracked(() => {
+        void this.activateNativeTextEdit();
+      });
+    });
+
+    // Keep the inline editor glued to its text object when the page geometry
+    // changes (zoom, fit mode, rotation or a panel collapse). Only geometry is
+    // recomputed — the typed DOM value is left untouched.
+    effect(() => {
+      this.state.zoom();
+      this.state.fitMode();
+      this.stageSize();
+      this.baseSizes();
+      this.pagesStore.pages();
+      untracked(() => {
+        const edit = this.activeNativeEdit();
+        if (!edit) {
+          return;
+        }
+        const page = this.pagesStore.pages().find((p) => p.id === edit.pageId);
+        if (!page) {
+          this.activeNativeEdit.set(null);
+          return;
+        }
+        this.activeNativeEdit.set({
+          ...edit,
+          ...this.nativeEditBox(edit.run, page),
+        });
+      });
     });
 
   }
@@ -2129,6 +2271,12 @@ export class EditorComponent implements OnDestroy {
       this.docUrl = null;
     }
     this.viewer.reset();
+    this.textEdit.reset();
+    this.nativeFonts.set([]);
+    if (this.recentPersistTimer !== null) {
+      clearTimeout(this.recentPersistTimer);
+      this.recentPersistTimer = null;
+    }
     if (typeof window !== 'undefined') {
       window.removeEventListener('keydown', this.globalKeydownCaptureListener, { capture: true });
     }
@@ -2258,6 +2406,598 @@ export class EditorComponent implements OnDestroy {
     this.state.setTool('select');
   }
 
+  // ── Native PDF text editing ───────────────────────────────────────────────
+
+  private nativeRunKey(page: EditorPage): string {
+    return `${page.sourceIndex}:${page.rotation || 0}`;
+  }
+
+  /**
+   * Duplicated editor pages share one source page until export, so a native
+   * edit would change every copy. Block editing on those pages instead.
+   */
+  private hasDuplicateSourcePage(page: EditorPage): boolean {
+    const pages = this.pagesStore.pages();
+    let count = 0;
+    for (const candidate of pages) {
+      if (candidate.sourceIndex === page.sourceIndex) {
+        count++;
+        if (count > 1) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  getNativeRunsForPage(page: EditorPage): MappedNativeTextRun[] {
+    return this.nativeRunsByKey().get(this.nativeRunKey(page)) ?? [];
+  }
+
+  /** Boots the PDFium engine and extracts text objects for nearby pages. */
+  async activateNativeTextEdit(): Promise<void> {
+    const file = this.files.currentFiles()[0];
+    if (!file || !this.docName()) {
+      return;
+    }
+    try {
+      await this.textEdit.ensureOpen(file.data);
+    } catch (error) {
+      this.toasts.error(
+        error instanceof Error
+          ? error.message
+          : 'Could not start the PDF text editor.',
+      );
+      this.state.setTool('select');
+      return;
+    }
+
+    const pages = this.pagesStore.pages();
+    if (pages.length === 0) {
+      return;
+    }
+    // Fonts are catalogued as pages are extracted; this seeds the panel and
+    // each extraction below widens the list.
+    void this.loadNativeFonts();
+    const windowRange = this.renderWindow();
+    for (let i = windowRange.min; i <= windowRange.max; i++) {
+      const page = pages[i];
+      if (page) {
+        void this.ensureNativeRuns(page);
+      }
+    }
+  }
+
+  private async loadNativeFonts(): Promise<void> {
+    try {
+      const fonts = await this.textEdit.listFonts();
+      const current = this.nativeFonts();
+      const unchanged =
+        current.length === fonts.length &&
+        current.every(
+          (family, index) =>
+            family.family === fonts[index].family &&
+            family.faces.length === fonts[index].faces.length,
+        );
+      if (!unchanged) {
+        this.nativeFonts.set(fonts);
+      }
+    } catch {
+      this.nativeFonts.set([]);
+    }
+  }
+
+  private async ensureNativeRuns(page: EditorPage): Promise<void> {
+    if (this.textEdit.status() !== 'ready') {
+      return;
+    }
+    const key = this.nativeRunKey(page);
+    if (this.nativeRunsByKey().has(key)) {
+      return;
+    }
+    try {
+      const info = await this.textEdit.extractPage(page.sourceIndex);
+      const viewport = await this.viewer.getPageViewport(
+        page.sourceIndex,
+        page.rotation || 0,
+      );
+      const mapped: MappedNativeTextRun[] = info.runs.map((run) => ({
+        ...run,
+        pageId: page.id,
+        normRect: pdfRectToNormRect(
+          viewport,
+          run.bbox.x,
+          run.bbox.y,
+          run.bbox.width,
+          run.bbox.height,
+        ),
+      }));
+      this.nativeRunsByKey.update((map) => {
+        const next = new Map(map);
+        next.set(key, mapped);
+        return next;
+      });
+      // Extraction registers each page's fonts in the worker.
+      void this.loadNativeFonts();
+      if (mapped.length === 0 && page.id === this.pagesStore.currentId()) {
+        this.toasts.info(
+          'No editable text found on this page. Scanned pages need OCR first.',
+        );
+      } else if (info.warnings.length > 0) {
+        console.warn('[NativeTextEdit]', info.warnings.join(' '));
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Could not read the text on this page.';
+      this.toasts.error(message);
+    }
+  }
+
+  /** Click handler for the transparent native-edit hit layer. */
+  onNativeTextClick(event: MouseEvent, page: EditorPage): void {
+    if (this.textEdit.applying()) {
+      return;
+    }
+    const layer = event.currentTarget as HTMLElement;
+    const rect = layer.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    if (!this.nativeRunsByKey().has(this.nativeRunKey(page))) {
+      void this.ensureNativeRuns(page);
+      return;
+    }
+
+    const nx = (event.clientX - rect.left) / rect.width;
+    const ny = (event.clientY - rect.top) / rect.height;
+    const runs = this.getNativeRunsForPage(page);
+    let best: MappedNativeTextRun | null = null;
+    for (const run of runs) {
+      const r = run.normRect;
+      const pad = 0.004;
+      if (
+        nx >= r.x - pad &&
+        nx <= r.x + r.width + pad &&
+        ny >= r.y - pad &&
+        ny <= r.y + r.height + pad
+      ) {
+        if (
+          !best ||
+          r.width * r.height < best.normRect.width * best.normRect.height
+        ) {
+          best = run;
+        }
+      }
+    }
+
+    if (!best) {
+      this.activeNativeEdit.set(null);
+      this.nativeSelection.set(null);
+      return;
+    }
+    if (this.hasDuplicateSourcePage(page)) {
+      this.toasts.info(
+        'This page is duplicated. Native text edits would change every copy, so it is read-only until the duplicate is removed.',
+      );
+      return;
+    }
+    this.openNativeEditor(best, page);
+  }
+
+  private nativeEditBox(
+    run: MappedNativeTextRun,
+    page: EditorPage,
+  ): {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    fontSizePx: number;
+  } {
+    const size = this.getPageDisplaySize(page);
+    const fontSizePx = Math.max(
+      9,
+      Math.min(96, run.fontSize * run.matrixScale * size.scale),
+    );
+    return {
+      left: Math.max(0, run.normRect.x * size.width - 2),
+      top: Math.max(0, run.normRect.y * size.height - 2),
+      width: Math.max(90, run.normRect.width * size.width + 8),
+      height: Math.max(
+        fontSizePx * 1.6,
+        run.normRect.height * size.height + 4,
+      ),
+      fontSizePx,
+    };
+  }
+
+  private openNativeEditor(run: MappedNativeTextRun, page: EditorPage): void {
+    const scale = run.matrixScale > 0 ? run.matrixScale : 1;
+    const effectiveFontSize = Math.round(run.fontSize * scale * 100) / 100;
+    this.nativeSelection.set({
+      pageId: page.id,
+      pageIndex: run.pageIndex,
+      objectIndices: run.objectIndices,
+      baseMatrix: run.matrix,
+      matrixScale: scale,
+      objectFontSize: run.fontSize,
+      effectiveFontSize,
+      text: run.text,
+      fontName: run.fontName,
+      style: {
+        fontFamily: 'original',
+        // Text objects sometimes carry `Tf 1` plus a scaled matrix; the panel
+        // shows the effective size the reader actually sees.
+        fontSize: effectiveFontSize,
+        // Reflect the embedded face: a `Carlito-Bold` run starts with Bold on
+        // so applying it again cannot add another layer of emphasis.
+        bold: isBoldFontName(run.fontName),
+        italic: isItalicFontName(run.fontName),
+        underline: false,
+        strikethrough: false,
+        color: run.color,
+      },
+    });
+    this.activeNativeEdit.set({
+      run,
+      pageId: page.id,
+      ...this.nativeEditBox(run, page),
+      initialText: run.text,
+      fontFamily: this.nativeFontFamily(run.fontName),
+      color: `rgba(${run.color.r}, ${run.color.g}, ${run.color.b}, ${
+        run.color.a / 255
+      })`,
+      bold: isBoldFontName(run.fontName),
+      italic: isItalicFontName(run.fontName),
+    });
+  }
+
+  private nativeFontFamily(fontName: string): string {
+    const name = (fontName || '').toLowerCase();
+    if (/times|serif|georgia|garamond|cambria/.test(name)) {
+      return "'Times New Roman', Times, serif";
+    }
+    if (/courier|mono|consol/.test(name)) {
+      return "'Courier New', Courier, monospace";
+    }
+    return 'Arial, Helvetica, sans-serif';
+  }
+
+  onNativeEditCancel(): void {
+    this.activeNativeEdit.set(null);
+  }
+
+  /** Builds the worker edit for a style, rebuilding from the original geometry. */
+  private nativeEditFor(
+    selection: NativeTextSelection,
+    text: string,
+    style: NativeTextStyle,
+  ): PdfNativeTextEdit {
+    const scale = selection.matrixScale > 0 ? selection.matrixScale : 1;
+    // Untouched size goes back verbatim; a round-trip through the effective
+    // size would resample the `Tf` operand on every text edit.
+    const sizeUnchanged =
+      Math.abs(style.fontSize - selection.effectiveFontSize) < 0.005;
+    const objectFontSize = sizeUnchanged
+      ? selection.objectFontSize
+      : style.fontSize > 0
+        ? style.fontSize / scale
+        : selection.objectFontSize;
+    return {
+      objectIndices: selection.objectIndices,
+      text,
+      originalText: selection.text,
+      fontSize: objectFontSize,
+      fontFamily: style.fontFamily,
+      bold: style.bold,
+      italic: style.italic,
+      underline: style.underline,
+      strikethrough: style.strikethrough,
+      fillColor: style.color,
+      // The worker decides whether the resolved face needs a synthetic shear;
+      // sending the base matrix keeps every re-apply idempotent.
+      matrix: selection.baseMatrix,
+    };
+  }
+
+  /** Stable identity of a run across style-only edits (matrix origin). */
+  private nativeCoalesceKey(selection: NativeTextSelection): string {
+    return `${selection.pageIndex}:${(selection.baseMatrix[4] ?? 0).toFixed(
+      2,
+    )}:${(selection.baseMatrix[5] ?? 0).toFixed(2)}`;
+  }
+
+  /** Serialises native edits so a blur-commit always lands before a style. */
+  private runNativeTask(task: () => Promise<void>): void {
+    const next = this.nativeChain.then(task, task);
+    this.nativeChain = next.catch(() => undefined);
+  }
+
+  onNativeStyleChange(patch: Partial<NativeTextStyle>): void {
+    this.runNativeTask(async () => {
+      const selection = this.nativeSelection();
+      if (!selection || !this.contentEditMode()) {
+        return;
+      }
+      const style: NativeTextStyle = { ...selection.style, ...patch };
+      const file = this.files.currentFiles()[0];
+      if (!file) {
+        return;
+      }
+      // Show the requested style immediately; the page re-render confirms it.
+      this.nativeSelection.set({ ...selection, style });
+      try {
+        const { bytes, result } = await this.textEdit.applyEdit(
+          selection.pageIndex,
+          this.nativeEditFor(selection, selection.text, style),
+          // Consecutive style tweaks of one run are one undoable step.
+          { coalesceKey: this.nativeCoalesceKey(selection) },
+        );
+        const outcome = result.outcomes[0];
+        this.nativeSelection.set({
+          ...selection,
+          style,
+          objectIndices: outcome?.objectIndices?.length
+            ? outcome.objectIndices
+            : selection.objectIndices,
+          fontName: outcome?.fontName || selection.fontName,
+        });
+        if (result.warnings.length > 0) {
+          this.toasts.warning(result.warnings[0]);
+        }
+        this.applyNativeBytesInPlace(bytes, [selection.pageIndex], file);
+      } catch (error) {
+        // The worker reopens the last good bytes on failure, which invalidates
+        // every object handle — drop the selection so the user re-picks the run.
+        this.nativeSelection.set(null);
+        this.toasts.error(
+          error instanceof Error
+            ? error.message
+            : 'Could not style the PDF text.',
+        );
+      }
+    });
+  }
+
+  async onNativeEditCommit(text: string): Promise<void> {
+    const active = this.activeNativeEdit();
+    if (!active) {
+      return;
+    }
+    if (text === active.initialText) {
+      this.activeNativeEdit.set(null);
+      return;
+    }
+    this.activeNativeEdit.set(null);
+    const pageIndex = active.run.pageIndex;
+    const file = this.files.currentFiles()[0];
+    if (!file) {
+      return;
+    }
+    // Capture the run *now*: a click on another run may replace the selection
+    // before the queued task runs, and this commit must target what the user
+    // actually edited.
+    const selectedNow = this.nativeSelection();
+    const sameHandles =
+      !!selectedNow &&
+      selectedNow.objectIndices.length === active.run.objectIndices.length &&
+      selectedNow.objectIndices.every(
+        (ptr, i) => ptr === active.run.objectIndices[i],
+      );
+    const matched =
+      selectedNow && selectedNow.pageIndex === pageIndex && sameHandles
+        ? selectedNow
+        : null;
+    const style: NativeTextStyle =
+      matched?.style ?? {
+        fontFamily: 'original',
+        fontSize:
+          active.run.fontSize *
+          (active.run.matrixScale > 0 ? active.run.matrixScale : 1),
+        bold: false,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        color: active.run.color,
+      };
+    const fallbackScale =
+      active.run.matrixScale > 0 ? active.run.matrixScale : 1;
+    const base: NativeTextSelection =
+      matched ?? {
+        pageId: active.pageId,
+        pageIndex,
+        objectIndices: active.run.objectIndices,
+        baseMatrix: active.run.matrix,
+        matrixScale: fallbackScale,
+        objectFontSize: active.run.fontSize,
+        effectiveFontSize:
+          Math.round(active.run.fontSize * fallbackScale * 100) / 100,
+        text: active.run.text,
+        fontName: active.run.fontName,
+        style,
+      };
+
+    this.runNativeTask(async () => {
+      try {
+        const { bytes, result } = await this.textEdit.applyEdit(
+          pageIndex,
+          this.nativeEditFor(base, text, style),
+        );
+        const outcome = result.outcomes[0];
+
+        // Object handles changed; drop every cached run for the page.
+        this.nativeRunsByKey.update((map) => {
+          const next = new Map(map);
+          for (const key of Array.from(next.keys())) {
+            if (key.startsWith(`${pageIndex}:`)) {
+              next.delete(key);
+            }
+          }
+          return next;
+        });
+
+        if (text.trim()) {
+          this.nativeSelection.set({
+            ...base,
+            text,
+            style,
+            objectIndices: outcome?.objectIndices?.length
+              ? outcome.objectIndices
+              : base.objectIndices,
+            fontName: outcome?.fontName || base.fontName,
+          });
+        } else {
+          this.nativeSelection.set(null);
+        }
+
+        if (result.substitutedFonts > 0) {
+          this.toasts.info('Font substituted for characters the original font lacks.');
+        } else if (result.warnings.length > 0) {
+          this.toasts.warning(result.warnings[0]);
+        } else {
+          this.toasts.success('PDF text updated.');
+        }
+
+        this.applyNativeBytesInPlace(bytes, [pageIndex], file);
+      } catch (error) {
+        // The worker reopens the last good bytes on failure, which invalidates
+        // every object handle — drop the selection so the user re-picks the run.
+        this.nativeSelection.set(null);
+        this.toasts.error(
+          error instanceof Error ? error.message : 'Could not update the PDF text.',
+        );
+      }
+    });
+  }
+
+  async nativeUndo(): Promise<void> {
+    const file = this.files.currentFiles()[0];
+    this.nativeSelection.set(null);
+    this.runNativeTask(async () => {
+      try {
+        const restored = await this.textEdit.undo();
+        if (restored) {
+          this.applyNativeBytesInPlace(restored.bytes, [restored.pageIndex], file);
+        }
+      } catch (error) {
+        this.toasts.error(
+          error instanceof Error ? error.message : 'Could not undo the text edit.',
+        );
+      }
+    });
+  }
+
+  async nativeRedo(): Promise<void> {
+    const file = this.files.currentFiles()[0];
+    this.nativeSelection.set(null);
+    this.runNativeTask(async () => {
+      try {
+        const restored = await this.textEdit.redo();
+        if (restored) {
+          this.applyNativeBytesInPlace(restored.bytes, [restored.pageIndex], file);
+        }
+      } catch (error) {
+        this.toasts.error(
+          error instanceof Error ? error.message : 'Could not redo the text edit.',
+        );
+      }
+    });
+  }
+
+  exitContentEditMode(): void {
+    this.activeNativeEdit.set(null);
+    this.nativeSelection.set(null);
+    this.state.setTool('select');
+  }
+
+  isNativePageOverridden(pageIndex: number): boolean {
+    return this.nativeRenderVersions().has(pageIndex);
+  }
+
+  nativePageVersion(pageIndex: number): number {
+    return this.nativeRenderVersions().get(pageIndex) ?? 0;
+  }
+
+  /**
+   * Debounced recent-file write. Style clicks fire per control, so writing the
+   * whole document to IndexedDB (and re-reading every recent record) on each
+   * one would stall the UI; the last state wins.
+   */
+  private recentPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private scheduleRecentPersist(
+    name: string,
+    bytes: ArrayBuffer,
+    editorState: StoredEditorState,
+  ): void {
+    if (this.recentPersistTimer !== null) {
+      clearTimeout(this.recentPersistTimer);
+    }
+    this.recentPersistTimer = setTimeout(() => {
+      this.recentPersistTimer = null;
+      void this.recentFiles
+        .addOrUpdate(name, bytes, bytes.byteLength, this.totalPages(), editorState)
+        .then((entries) => {
+          // addOrUpdate already returned the refreshed metadata: no second read.
+          if (entries.length > 0) {
+            this.recentEntries.set(entries);
+          }
+        });
+    }, 600);
+  }
+
+  /**
+   * Publishes native-edited bytes without reloading the viewer. The affected
+   * page is re-rendered from PDFium in place, so undo/redo and commits only
+   * refresh that page's canvas.
+   */
+  private applyNativeBytesInPlace(
+    bytes: ArrayBuffer,
+    pageIndices: readonly number[],
+    expectedFile?: LoadedFile,
+  ): void {
+    const file = this.files.currentFiles()[0];
+    if (!file || (expectedFile && file !== expectedFile)) {
+      return;
+    }
+    const editorState = this.getStoredEditorState();
+    this.files.patchCurrentData(bytes, editorState);
+    this.activeNativeEdit.set(null);
+
+    for (const pageIndex of pageIndices) {
+      this.nativeRenderVersions.update((map) => {
+        const next = new Map(map);
+        next.set(pageIndex, (next.get(pageIndex) ?? 0) + 1);
+        return next;
+      });
+      // Object handles changed; drop cached runs for the page.
+      this.nativeRunsByKey.update((map) => {
+        const next = new Map(map);
+        for (const key of Array.from(next.keys())) {
+          if (key.startsWith(`${pageIndex}:`)) {
+            next.delete(key);
+          }
+        }
+        return next;
+      });
+    }
+
+    // Persist the edited bytes + current annotations without a viewer reload.
+    this.scheduleRecentPersist(file.name, bytes, editorState);
+    const autoSaveEnabled =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('ipdfeditor.auto-save') !== 'false'
+        : true;
+    if (autoSaveEnabled) {
+      void this.storage
+        .saveDocument(file.name, bytes, editorState)
+        .catch(() => undefined);
+    }
+    this.state.markSaved();
+  }
+
   async toggleFullscreen(): Promise<void> {
     const editor = this.editorRef()?.nativeElement;
     if (!editor) {
@@ -2292,6 +3032,13 @@ export class EditorComponent implements OnDestroy {
     this.loading.set(true);
     this.state.reset();
     this.viewer.reset();
+    this.activeNativeEdit.set(null);
+    this.nativeSelection.set(null);
+    // A genuinely new document: drop the PDFium document + native history.
+    this.textEdit.reset();
+    this.nativeFonts.set([]);
+    this.nativeRunsByKey.set(new Map());
+    this.nativeRenderVersions.set(new Map());
     this.pageAnnotationViewports.clear();
     this.isAutoScrolling = true;
     if (this.docUrl) {
@@ -2781,6 +3528,10 @@ export class EditorComponent implements OnDestroy {
         this.cancelPendingPlacement();
         return;
       }
+      if (this.contentEditMode()) {
+        this.exitContentEditMode();
+        return;
+      }
       if (this.isFullscreen()) {
         void document.exitFullscreen();
         return;
@@ -2837,6 +3588,10 @@ export class EditorComponent implements OnDestroy {
     const isRedo = (event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey));
     if (isUndo) {
       event.preventDefault();
+      if (this.contentEditMode() && this.textEdit.canUndo()) {
+        void this.nativeUndo();
+        return;
+      }
       const res = this.state.undo();
       if (res.success && res.description) {
         this.toasts.info(`Undone: ${res.description}`);
@@ -2845,6 +3600,10 @@ export class EditorComponent implements OnDestroy {
     }
     if (isRedo) {
       event.preventDefault();
+      if (this.contentEditMode() && this.textEdit.canRedo()) {
+        void this.nativeRedo();
+        return;
+      }
       const res = this.state.redo();
       if (res.success && res.description) {
         this.toasts.info(`Redone: ${res.description}`);
@@ -2857,6 +3616,7 @@ export class EditorComponent implements OnDestroy {
 
     if (!hasModifier && !isInput && selectedIds.length === 0) {
       const k = event.key.toLowerCase();
+      if (event.shiftKey && k === 'e') { this.selectTool('content-edit'); return; }
       if (k === 'v') { this.selectTool('select'); return; }
       if (k === 'h') { this.selectTool('hand'); return; }
       if (k === 't') { this.selectTool('text'); return; }

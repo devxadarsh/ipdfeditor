@@ -1919,6 +1919,171 @@
         }
       </div>
     </app-panel-section>
+  } @else if (activeTool() === 'content-edit') {
+    <app-panel-section title="PDF Text" icon="fa-solid fa-i-cursor">
+      @if (nativeTarget(); as nt) {
+        <div class="props__group">
+          <div class="props__row props__row--between">
+            <span class="props__label">Selected text</span>
+            <span class="props__hint-inline" [title]="nt.fontName">{{ displayFontName(nt.fontName) || 'Embedded font' }}</span>
+          </div>
+          <p class="props__native-quote">{{ nt.text }}</p>
+        </div>
+
+        <div class="props__divider"></div>
+
+        <div class="props__group">
+          <label class="props__label">Font</label>
+          <div class="props__row props__row--inline">
+            <select
+              class="pf-input props__select-font"
+              [value]="nt.style.fontFamily"
+              [disabled]="nativeBusy()"
+              (change)="setNativeFamily($any($event.target).value)"
+              aria-label="Font family"
+            >
+              <option value="original">Original font ({{ displayFontName(nt.fontName) || 'embedded' }})</option>
+              @if (nativeFonts().length > 0) {
+                <optgroup label="Document fonts">
+                  @for (family of nativeFonts(); track family.family) {
+                    <option [value]="family.family">{{ family.family }}</option>
+                  }
+                </optgroup>
+              }
+              <optgroup label="Standard fonts">
+                <option value="sans">Helvetica / Arial</option>
+                <option value="serif">Times / Serif</option>
+                <option value="mono">Courier / Mono</option>
+              </optgroup>
+            </select>
+            <input
+              class="pf-input props__input-size"
+              type="number"
+              min="1"
+              max="400"
+              step="0.5"
+              [value]="nt.style.fontSize"
+              [disabled]="nativeBusy()"
+              (change)="setNativeFontSize($any($event.target).value)"
+              title="Font size in points"
+              aria-label="Font size"
+            />
+          </div>
+
+          @if (nativeFamilyFaces().length > 0) {
+            <p class="props__native-faces" [title]="nativeFamilyFaces().join(', ')">
+              <i class="fa-solid fa-layer-group"></i>
+              {{ nativeFamilyFaces().join(' · ') }}
+            </p>
+          }
+
+          <div class="props__row props__row--between">
+            <div class="props__seg-group">
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="nt.style.bold"
+                [disabled]="nativeBusy()"
+                (click)="toggleNativeBold(nt.style)"
+                title="Bold"
+                aria-label="Bold"
+              >
+                <i class="fa-solid fa-bold"></i>
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="nt.style.italic"
+                [disabled]="nativeBusy()"
+                (click)="toggleNativeItalic(nt.style)"
+                title="Italic"
+                aria-label="Italic"
+              >
+                <i class="fa-solid fa-italic"></i>
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="nt.style.underline"
+                [disabled]="nativeBusy()"
+                (click)="toggleNativeUnderline(nt.style)"
+                title="Underline"
+                aria-label="Underline"
+              >
+                <i class="fa-solid fa-underline"></i>
+              </button>
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="nt.style.strikethrough"
+                [disabled]="nativeBusy()"
+                (click)="toggleNativeStrikethrough(nt.style)"
+                title="Strikethrough"
+                aria-label="Strikethrough"
+              >
+                <i class="fa-solid fa-strikethrough"></i>
+              </button>
+            </div>
+            <input
+              class="pf-color props__color-picker"
+              type="color"
+              [value]="rgbaToHex(nt.style.color)"
+              [disabled]="nativeBusy()"
+              (change)="setNativeColor($any($event.target).value, nt.style.color.a)"
+              title="Text color"
+              aria-label="Text color"
+            />
+          </div>
+        </div>
+
+        <div class="props__group">
+          <label class="props__label">Quick Sizes</label>
+          <div class="props__native-sizes">
+            @for (size of nativeFontSizes; track size) {
+              <button
+                type="button"
+                class="props__seg-btn"
+                [class.props__seg-btn--on]="nt.style.fontSize === size"
+                [disabled]="nativeBusy()"
+                (click)="setNativeFontSize(size)"
+              >
+                {{ size }}
+              </button>
+            }
+          </div>
+        </div>
+
+        <div class="props__group">
+          <label class="props__label">Text Color</label>
+          <div class="props__swatches">
+            @for (s of textColorSwatches; track s.value) {
+              <button
+                type="button"
+                class="props__swatch"
+                [class.props__swatch--on]="rgbaToHex(nt.style.color) === s.value"
+                [style.background]="s.value"
+                [title]="s.label"
+                [disabled]="nativeBusy()"
+                [attr.aria-label]="'Set text color to ' + s.label"
+                (click)="setNativeColor(s.value, nt.style.color.a)"
+              ></button>
+            }
+          </div>
+        </div>
+
+        <p class="props__native-hint">
+          <i class="fa-solid fa-circle-info"></i>
+          Changes are written into the real PDF text object — not an overlay.
+        </p>
+      } @else {
+        <div class="props__group">
+          <p class="pf-text-muted props__empty-text">
+            Click any sentence or word on the page to edit it. Its font, size,
+            emphasis and colour tools appear here.
+          </p>
+        </div>
+      }
+    </app-panel-section>
   } @else if (activeTool() === 'select') {
     <app-panel-section title="Selection Options" icon="fa-solid fa-arrow-pointer">
       <div class="props__group">

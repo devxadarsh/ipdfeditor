@@ -1,0 +1,18 @@
+<textarea
+  #area
+  class="native-text-edit__area"
+  spellcheck="false"
+  autocomplete="off"
+  autocorrect="off"
+  autocapitalize="off"
+  wrap="off"
+  [style.font-size.px]="fontSizePx()"
+  [style.font-family]="fontFamily()"
+  [style.color]="color()"
+  [style.font-weight]="bold() ? 700 : 400"
+  [style.font-style]="italic() ? 'italic' : 'normal'"
+  [attr.aria-label]="'Edit PDF text'"
+  [disabled]="busy()"
+  (keydown)="onKeydown($event)"
+  (blur)="onBlur()"
+></textarea>

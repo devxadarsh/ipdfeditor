@@ -5,6 +5,36 @@ import { StoredEditorState } from '../../models/file.models';
 /** 30 days in milliseconds. */
 const EXPIRATION_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** Metadata view of a stored record (raw bytes intentionally dropped). */
+function toRecentEntry(record: RecentFileRecord): RecentFileEntry {
+  return {
+    id: record.id,
+    name: record.name,
+    sizeBytes: record.sizeBytes,
+    lastOpenedAt: record.lastOpenedAt,
+    pageCount: record.pageCount,
+    pinned: record.pinned,
+    hasData: Boolean(record.data && record.data.byteLength > 0),
+  };
+}
+
+/** Pinned first (newest to oldest), then unpinned (newest to oldest). */
+function sortRecentRecords(a: RecentFileRecord, b: RecentFileRecord): number {
+  if (a.pinned && !b.pinned) return -1;
+  if (!a.pinned && b.pinned) return 1;
+  return b.lastOpenedAt - a.lastOpenedAt;
+}
+
+function recentRecordsToEntries(
+  records: readonly RecentFileRecord[],
+): RecentFileEntry[] {
+  const cutoff = Date.now() - EXPIRATION_MS;
+  return records
+    .filter((r) => r.pinned || r.lastOpenedAt >= cutoff)
+    .sort(sortRecentRecords)
+    .map(toRecentEntry);
+}
+
 /** IndexedDB database name (shared with DocumentStorageService). */
 const DB_NAME = 'ipdfeditor-docs';
 const DB_VERSION = 2;
@@ -92,7 +122,7 @@ export class RecentFilesService {
     sizeBytes: number,
     pageCount?: number,
     editorState?: StoredEditorState,
-  ): Promise<void> {
+  ): Promise<RecentFileEntry[]> {
     try {
       const db = await this.getDb();
       const all = await db.getAll(RECENT_STORE);
@@ -112,8 +142,14 @@ export class RecentFilesService {
       };
 
       await db.put(RECENT_STORE, record);
+
+      // Reuse the list we already loaded so callers do not need a second
+      // full read of every stored document.
+      const next = all.filter((e) => e.id !== record.id).concat(record);
+      return recentRecordsToEntries(next);
     } catch (err) {
       console.warn('[RecentFiles] Could not store recent file in IndexedDB via idb:', err);
+      return [];
     }
   }
 
@@ -213,26 +249,8 @@ export class RecentFilesService {
       }
       await tx.done;
 
-      // Filter valid entries (either pinned or within 30-day window)
-      const valid = all.filter((e) => e.pinned || e.lastOpenedAt >= cutoff);
-
-      // Sort: pinned first (newest to oldest), then unpinned (newest to oldest)
-      valid.sort((a, b) => {
-        if (a.pinned && !b.pinned) return -1;
-        if (!a.pinned && b.pinned) return 1;
-        return b.lastOpenedAt - a.lastOpenedAt;
-      });
-
-      // Map to lightweight metadata entries (excluding raw ArrayBuffer to save memory)
-      return valid.map((r) => ({
-        id: r.id,
-        name: r.name,
-        sizeBytes: r.sizeBytes,
-        lastOpenedAt: r.lastOpenedAt,
-        pageCount: r.pageCount,
-        pinned: r.pinned,
-        hasData: Boolean(r.data && r.data.byteLength > 0),
-      }));
+      // Filter/sort/map to lightweight metadata (no raw ArrayBuffer retained)
+      return recentRecordsToEntries(all);
     } catch (err) {
       console.warn('[RecentFiles] Could not load recent files from IndexedDB via idb:', err);
       return [];

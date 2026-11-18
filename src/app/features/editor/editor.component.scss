@@ -2517,3 +2517,112 @@
   }
 }
 
+
+// ─── Native PDF text editing ────────────────────────────────────────────────
+.editor__native-hitlayer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  cursor: text;
+  background: transparent;
+  touch-action: pan-x pan-y pinch-zoom;
+}
+
+.editor__native-banner {
+  position: absolute;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--pf-surface-container-high, #1e293b);
+  color: var(--pf-on-surface, #ffffff);
+  border: 1px solid var(--pf-primary, #3b82f6);
+  padding: 6px 10px 6px 16px;
+  border-radius: 24px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(59, 130, 246, 0.2);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  animation: bannerSlideDown 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.editor__native-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  > i {
+    color: var(--pf-primary, #3b82f6);
+    font-size: 14px;
+  }
+}
+
+.editor__native-banner-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #bfdbfe;
+  font-size: 12px;
+}
+
+.editor__native-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor__native-banner-btn,
+.editor__native-banner-exit {
+  border: none;
+  background: rgba(255, 255, 255, 0.14);
+  color: inherit;
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s ease, opacity 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.24);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+}
+
+.editor__native-banner-exit:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+@media (max-width: 768px) {
+  .editor__native-banner {
+    top: auto;
+    bottom: 58px;
+    left: 10px;
+    right: 10px;
+    transform: none;
+    width: auto;
+    max-width: calc(100% - 20px);
+    box-sizing: border-box;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    white-space: normal;
+    z-index: 95;
+    background: #1e293b;
+    border: 1.5px solid #3b82f6;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+    animation: bannerSlideUpMobile 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+}

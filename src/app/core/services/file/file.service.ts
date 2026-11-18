@@ -97,6 +97,31 @@ export class FileService {
     this.currentFiles.set([...files]);
   }
 
+  /**
+   * Replaces the open document's bytes in place without changing the signal
+   * identity, so the editor does not reload the whole viewer. Native text
+   * editing uses this and re-renders only the affected page.
+   */
+  patchCurrentData(
+    data: ArrayBuffer,
+    editorState?: LoadedFile['editorState'],
+  ): void {
+    const current = this.currentFiles();
+    if (current.length === 0) {
+      return;
+    }
+    const first = current[0] as {
+      data: ArrayBuffer;
+      sizeBytes: number;
+      editorState?: LoadedFile['editorState'];
+    };
+    first.data = data;
+    first.sizeBytes = data.byteLength;
+    if (editorState !== undefined) {
+      first.editorState = editorState;
+    }
+  }
+
   clearCurrent(): void {
     this.currentFiles.set([]);
     void this.storage.clearDocument();

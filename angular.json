@@ -26,7 +26,9 @@
             "allowedCommonJsDependencies": [
               "pako",
               "@neslinesli93/qpdf-wasm",
-              "tesseract.js"
+              "tesseract.js",
+              "base64-js",
+              "brotli"
             ],
             "externalDependencies": [
               "fs",
@@ -50,6 +52,11 @@
                 "glob": "qpdf.wasm",
                 "input": "node_modules/@neslinesli93/qpdf-wasm/dist",
                 "output": "assets"
+              },
+              {
+                "glob": "pdfium.wasm",
+                "input": "node_modules/@embedpdf/pdfium/dist",
+                "output": "."
               }
             ],
             "styles": [
@@ -124,6 +131,11 @@
                 "glob": "qpdf.wasm",
                 "input": "node_modules/@neslinesli93/qpdf-wasm/dist",
                 "output": "assets"
+              },
+              {
+                "glob": "pdfium.wasm",
+                "input": "node_modules/@embedpdf/pdfium/dist",
+                "output": "."
               }
             ],
             "styles": [

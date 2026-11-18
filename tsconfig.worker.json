@@ -1,0 +1,17 @@
+/* Type-checks Web Worker entry points, which the Angular app tsconfig does not
+   reach because workers are referenced through `new URL(...)`. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/worker",
+    "types": [],
+    "lib": [
+      "ES2022",
+      "WebWorker",
+      "DOM"
+    ]
+  },
+  "include": [
+    "src/app/workers/**/*.ts"
+  ]
+}
