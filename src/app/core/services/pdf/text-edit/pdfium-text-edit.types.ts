@@ -51,9 +51,26 @@ export interface PdfNativeTextRun {
   /** PDF text render mode (0 fill, 1 stroke, 2 fill+stroke, 3 invisible). */
   readonly renderMode: number;
   readonly fontName: string;
+  /** Display family of the embedded face, e.g. `Carlito`. */
+  readonly fontFamily: string;
+  /** Bold according to the font descriptor, not just the face name. */
+  readonly fontBold: boolean;
+  readonly fontItalic: boolean;
+  /** Text is stroked (render mode 1/2), which visually reads as bold. */
+  readonly strokeBold: boolean;
+  /** Stroke width in points at `fontSize` (0 when the text is not stroked). */
+  readonly strokeWidth: number;
   readonly color: PdfColorRgba;
   /** Object bounds in PDF user space. */
   readonly bbox: PdfRect;
+}
+
+/** One embedded font program handed to the browser for faithful previews. */
+export interface PdfNativeFontProgram {
+  readonly bold: boolean;
+  readonly italic: boolean;
+  /** Transferred (not cloned) to the main thread; detached after the call. */
+  readonly bytes: ArrayBuffer;
 }
 
 /** One font face embedded in (or referenced by) the open document. */
@@ -169,6 +186,15 @@ export interface PdfTextEditWorkerApi {
   open(bytes: ArrayBuffer, wasmUrl: string): Promise<PdfNativeTextOpenResult>;
   /** Font families present in the open document (cached by the worker). */
   listFonts(): Promise<PdfNativeFontFamilyInfo[]>;
+  /**
+   * Embedded font program for a face returned by `listFonts()` (or a run's
+   * `fontName`), so the browser can render the real typeface while editing.
+   * Returns `null` for non-embedded faces and unverifiable encodings.
+   */
+  readFontProgram(
+    name: string,
+    text: string,
+  ): Promise<PdfNativeFontProgram | null>;
   extractPage(pageIndex: number): Promise<PdfNativeTextPageInfo>;
   applyEdits(
     pageIndex: number,
@@ -180,6 +206,20 @@ export interface PdfTextEditWorkerApi {
     pageIndex: number,
     scale: number,
     rotation: number,
+  ): Promise<PdfNativeTextRender>;
+  /**
+   * Repaints a sub-rectangle of a page with the given text objects hidden.
+   *
+   * `region` is in normalized display coordinates (0..1, y down) — the same
+   * space as a run's `normRect` — so the result can be drawn exactly over the
+   * glyphs an inline edit replaces, on top of whatever the page paints there.
+   */
+  renderRegionMask(
+    pageIndex: number,
+    scale: number,
+    rotation: number,
+    region: PdfRect,
+    hiddenObjects: readonly number[],
   ): Promise<PdfNativeTextRender>;
   reset(): void;
 }

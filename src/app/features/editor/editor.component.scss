@@ -2528,6 +2528,23 @@
   touch-action: pan-x pan-y pinch-zoom;
 }
 
+// Masks the glyphs an inline edit replaces with the page's real background
+// (PDFium repaint of the run box), so the field reads as the text itself
+// instead of an overlay on it. Above the hit layer, below the field
+// (z-index 50 in native-text-edit).
+.editor__native-edit-backdrop {
+  position: absolute;
+  z-index: 45;
+  pointer-events: none;
+  overflow: hidden;
+
+  // Instant fallback for flat areas while the PDFium patch is rendered.
+  &__fill {
+    position: absolute;
+    inset: 0;
+  }
+}
+
 .editor__native-banner {
   position: absolute;
   top: 48px;

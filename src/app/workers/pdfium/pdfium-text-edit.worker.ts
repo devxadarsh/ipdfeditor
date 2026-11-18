@@ -23,6 +23,7 @@ import { init, type WrappedPdfiumModule } from '@embedpdf/pdfium';
 import type {
   PdfColorRgba,
   PdfNativeFontFamilyInfo,
+  PdfNativeFontProgram,
   PdfNativeTextApplyResult,
   PdfNativeTextEdit,
   PdfNativeTextEditOutcome,
@@ -430,6 +431,119 @@ function readFontName(fontPtr: number): string {
   return readFontBaseName(fontPtr) || readFontFamilyName(fontPtr);
 }
 
+/**
+ * PDF font descriptor flags. Names are unreliable in real documents (writers
+ * emit `Calibri` for both weights), so the descriptor decides first and the
+ * name is only a fallback.
+ */
+const FONT_FLAG_ITALIC = 1 << 6;
+const FONT_FLAG_FORCE_BOLD = 1 << 18;
+
+/** Name tokens that already state the face's emphasis. */
+const EXPLICIT_STYLE_TOKEN_RE =
+  /bold|black|heavy|demi|light|thin|regular|book|roman|italic|oblique/i;
+
+const fontStyleCache = new Map<number, { bold: boolean; italic: boolean }>();
+
+/**
+ * Bold/italic of a face.
+ *
+ * The font descriptor decides first, then the PDF font name, and finally the
+ * embedded program itself (some writers leave both the name and the descriptor
+ * uninformative). Results are cached per font handle.
+ */
+function readFontStyle(
+  fontPtr: number,
+  name: string,
+): { bold: boolean; italic: boolean } {
+  const cached = fontPtr ? fontStyleCache.get(fontPtr) : undefined;
+  if (cached) {
+    return cached;
+  }
+  let weight = 0;
+  let flags = 0;
+  let italicAngle = 0;
+  if (fontPtr) {
+    try {
+      weight = pdfium!.FPDFFont_GetWeight(fontPtr) || 0;
+    } catch {
+      weight = 0;
+    }
+    try {
+      // PDFium reports -1 on failure; a negative bitmask would set every flag.
+      const raw = pdfium!.FPDFFont_GetFlags(fontPtr);
+      flags = raw > 0 ? raw : 0;
+    } catch {
+      flags = 0;
+    }
+    const anglePtr = alloc(4);
+    try {
+      if (pdfium!.FPDFFont_GetItalicAngle(fontPtr, anglePtr)) {
+        italicAngle = f32(anglePtr, 1)[0] || 0;
+      }
+    } catch {
+      italicAngle = 0;
+    } finally {
+      free(anglePtr);
+    }
+  }
+  let bold =
+    weight >= 600 ||
+    (flags & FONT_FLAG_FORCE_BOLD) !== 0 ||
+    isBoldFontName(name);
+  let italic =
+    (flags & FONT_FLAG_ITALIC) !== 0 ||
+    Math.abs(italicAngle) >= 0.5 ||
+    isItalicFontName(name);
+
+  // A name without any style word ("Calibri", "ABCDEF+Font") carries no
+  // evidence; ask the program itself rather than guessing regular.
+  if (fontPtr && !EXPLICIT_STYLE_TOKEN_RE.test(displayFontName(name))) {
+    try {
+      if (pdfium!.FPDFFont_GetIsEmbedded(fontPtr)) {
+        const bytes = readFontBytes(fontPtr);
+        if (bytes) {
+          const font = (
+            createFont as unknown as (input: Uint8Array) => {
+              'OS/2'?: { usWeightClass?: number };
+              post?: { italicAngle?: number };
+              head?: {
+                macStyle?: number | { bold?: boolean; italic?: boolean };
+              };
+            }
+          )(bytes);
+          if ((font['OS/2']?.usWeightClass ?? 0) >= 600) {
+            bold = true;
+          }
+          const macStyle = font.head?.macStyle;
+          const macItalic =
+            typeof macStyle === 'number'
+              ? (macStyle & 2) !== 0
+              : !!macStyle?.italic;
+          const macBold =
+            typeof macStyle === 'number'
+              ? (macStyle & 1) !== 0
+              : !!macStyle?.bold;
+          if (macBold) {
+            bold = true;
+          }
+          if (macItalic || Math.abs(font.post?.italicAngle ?? 0) > 0.5) {
+            italic = true;
+          }
+        }
+      }
+    } catch {
+      /* unparseable program: keep the descriptor/name verdict */
+    }
+  }
+
+  const style = { bold, italic };
+  if (fontPtr) {
+    fontStyleCache.set(fontPtr, style);
+  }
+  return style;
+}
+
 // ─── Document font catalog ──────────────────────────────────────────────────
 
 interface DocumentFontFace {
@@ -465,19 +579,81 @@ function registerFont(fontPtr: number, baseName: string): void {
     return;
   }
   documentFontFaceNames.add(key);
+  const style = readFontStyle(fontPtr, name);
   documentFontFaces.push({
     name,
     family: familyFromFontName(rawName, familyName) || name,
-    bold: isBoldFontName(name),
-    italic: isItalicFontName(name),
+    bold: style.bold,
+    italic: style.italic,
     ptr: fontPtr,
   });
+}
+
+/** Catalog face whose display name (or family) matches `name`. */
+function findDocumentFace(name: string): DocumentFontFace | null {
+  const key = displayFontName(name || '').trim().toLowerCase();
+  if (!key) {
+    return null;
+  }
+  return (
+    documentFontFaces.find((face) => face.name.toLowerCase() === key) ??
+    documentFontFaces.find((face) => face.family.toLowerCase() === key) ??
+    null
+  );
+}
+
+/**
+ * Hands the embedded font program to the main thread.
+ *
+ * The inline editor registers it with the FontFace API so the text being typed
+ * is previewed in the document's real typeface instead of a generic fallback.
+ */
+function readFontProgram(
+  name: string,
+  text: string,
+): PdfNativeFontProgram | null {
+  const face = findDocumentFace(name);
+  if (!face) {
+    return null;
+  }
+  // Non-embedded (base-14) faces resolve through viewer substitution, and the
+  // browser's own standard-font fallback is closer to what pdf.js draws than
+  // PDFium's built-in copy would be.
+  try {
+    if (!pdfium!.FPDFFont_GetIsEmbedded(face.ptr)) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  // Only preview with a program whose Unicode mapping we could verify; subsets
+  // with a custom encoding would paint .notdef boxes instead of the real run.
+  const coverage = glyphCoverageCached(face.ptr, text);
+  if (!coverage.checked || !coverage.supported) {
+    return null;
+  }
+  const bytes = readFontBytes(face.ptr);
+  if (!bytes || bytes.byteLength === 0) {
+    return null;
+  }
+  // `readFontBytes` already copies out of the WASM heap; make sure the view
+  // owns its whole buffer so the API can transfer it to the main thread.
+  const exact =
+    bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? (bytes.buffer as ArrayBuffer)
+      : (bytes.slice().buffer as ArrayBuffer);
+  return {
+    bold: face.bold,
+    italic: face.italic,
+    bytes: exact,
+  };
 }
 
 function resetFontCatalog(): void {
   documentFontFaces.length = 0;
   documentFontFaceNames.clear();
   registeredFontPtrs.clear();
+  fontStyleCache.clear();
 }
 
 /** Groups the catalog into the family list the properties panel renders. */
@@ -724,8 +900,12 @@ interface RawTextRun {
   /** PDFium font handle; identical for objects sharing one font resource. */
   readonly fontPtr: number;
   readonly fontName: string;
+  readonly fontFamily: string;
+  readonly fontBold: boolean;
+  readonly fontItalic: boolean;
   readonly color: PdfColorRgba;
   readonly renderMode: number;
+  readonly strokeWidth: number;
   readonly matrix: readonly number[];
   readonly bbox: PdfRect;
 }
@@ -747,7 +927,14 @@ function buildRunGroup(
   pageIndex: number,
   members: readonly RawTextRun[],
 ): PdfNativeTextRun {
-  const anchor = members[0];
+  // Anchor on the leftmost object: its text matrix origin is where the run
+  // starts, which is what the inline editor aligns its own baseline to.
+  let anchor = members[0];
+  for (const member of members) {
+    if (member.bbox.x < anchor.bbox.x) {
+      anchor = member;
+    }
+  }
   const effectiveSize = Math.max(1, anchor.fontSize * anchor.matrixScale);
   let text = '';
 
@@ -788,6 +975,13 @@ function buildRunGroup(
     matrix: anchor.matrix,
     renderMode: anchor.renderMode,
     fontName: anchor.fontName,
+    fontFamily: anchor.fontFamily,
+    fontBold: anchor.fontBold,
+    fontItalic: anchor.fontItalic,
+    strokeBold:
+      (anchor.renderMode === 1 || anchor.renderMode === 2) &&
+      anchor.strokeWidth > 0,
+    strokeWidth: anchor.strokeWidth,
     color: anchor.color,
     bbox: {
       x: left,
@@ -945,6 +1139,7 @@ function extractPage(pageIndex: number): PdfNativeTextPageInfo {
 
     const props = readTextObjectProps(objectPtr);
     registerFont(props.fontPtr, props.fontName);
+    const fontStyle = readFontStyle(props.fontPtr, props.fontName);
     // Render mode 3 is invisible text (often an OCR layer over a scan);
     // editing it would not produce a visible change.
     if (props.renderMode === 3) {
@@ -1000,8 +1195,14 @@ function extractPage(pageIndex: number): PdfNativeTextPageInfo {
       matrixScale: props.matrixScale,
       fontPtr: props.fontPtr,
       fontName: props.fontName,
+      fontFamily:
+        familyForFont(props.fontPtr, props.fontName) ||
+        displayFontName(props.fontName),
+      fontBold: fontStyle.bold,
+      fontItalic: fontStyle.italic,
       color: props.fill,
       renderMode: props.renderMode,
+      strokeWidth: props.strokeWidth,
       matrix: props.matrix,
       bbox,
     });
@@ -1492,8 +1693,9 @@ function applyEdits(
     }
 
     const chosenFontName = readFontName(fontPtr) || requestedFaceName;
-    const faceIsBold = isBoldFontName(chosenFontName);
-    const faceIsItalic = isItalicFontName(chosenFontName);
+    const faceStyle = readFontStyle(fontPtr, chosenFontName);
+    const faceIsBold = faceStyle.bold;
+    const faceIsItalic = faceStyle.italic;
     // Synthetic emphasis is applied only when the chosen face cannot express
     // the request itself. Reusing a real bold/italic face must never add a
     // stroke or a shear, otherwise plain text edits would look heavier/slanted.
@@ -1723,11 +1925,30 @@ function saveDocument(): ArrayBuffer {
  * rotation in degrees; PDFium's inherent /Rotate is compensated for so the
  * output matches the pdf.js viewport.
  */
-function renderPage(
+/**
+ * Device-space geometry of a page rendered for display.
+ *
+ * Shared by the full-page render and the region mask so a sub-rectangle lines
+ * up pixel-for-pixel with the page canvas (including the memory cap).
+ */
+interface PageRenderGeometry {
+  readonly page: number;
+  readonly width: number;
+  readonly height: number;
+  readonly rotateParam: number;
+}
+
+/**
+ * Resolves how a page maps to device pixels for a display `rotation`.
+ *
+ * `scale` is device pixels per point; PDFium's inherent /Rotate is compensated
+ * for so the output matches the pdf.js viewport.
+ */
+function pageRenderGeometry(
   pageIndex: number,
   scale: number,
   rotation: number,
-): PdfNativeTextRender {
+): PageRenderGeometry {
   const api = pdfium!;
   const page = getPage(pageIndex);
   const pageWidth = api.FPDF_GetPageWidthF(page) || 0;
@@ -1770,49 +1991,233 @@ function renderPage(
     outHeight = Math.max(1, Math.floor(outHeight * shrink));
   }
 
-  const rotateParam = (totalQuarter - inherent + 4) % 4;
-  const bitmap = api.FPDFBitmap_Create(outWidth, outHeight, 1);
+  return {
+    page,
+    width: outWidth,
+    height: outHeight,
+    rotateParam: (totalQuarter - inherent + 4) % 4,
+  };
+}
+
+/** Copies a rendered PDFium bitmap into RGBA order for an `ImageData`. */
+function bitmapPixels(
+  bitmap: number,
+  width: number,
+  height: number,
+): Uint8ClampedArray {
+  const api = pdfium!;
+  const bufferPtr = api.FPDFBitmap_GetBuffer(bitmap);
+  const stride = api.FPDFBitmap_GetStride(bitmap);
+  if (!bufferPtr || stride <= 0) {
+    throw new Error('Could not read the rendered page bitmap.');
+  }
+
+  const source = heap();
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    let src = bufferPtr + y * stride;
+    let dst = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      // PDFium bitmaps are BGRA; canvas ImageData expects RGBA.
+      pixels[dst] = source[src + 2];
+      pixels[dst + 1] = source[src + 1];
+      pixels[dst + 2] = source[src];
+      pixels[dst + 3] = source[src + 3];
+      src += 4;
+      dst += 4;
+    }
+  }
+  return pixels;
+}
+
+/**
+ * Reads one page object's fill or stroke colour.
+ *
+ * PDFium reports a zero alpha for opaque colours; normalise it so restoring a
+ * saved colour cannot make the object transparent.
+ */
+function readPageObjectColor(
+  ptr: number,
+  getter: (
+    obj: number,
+    r: number,
+    g: number,
+    b: number,
+    a: number,
+  ) => boolean,
+): PdfColorRgba | null {
+  const colorPtr = alloc(4 * 4);
+  try {
+    if (!getter(ptr, colorPtr, colorPtr + 4, colorPtr + 8, colorPtr + 12)) {
+      return null;
+    }
+    const values = new Uint32Array(heap().buffer, colorPtr, 4);
+    return {
+      r: clamp255(values[0]),
+      g: clamp255(values[1]),
+      b: clamp255(values[2]),
+      a: values[3] === 0 ? 255 : clamp255(values[3]),
+    };
+  } catch {
+    return null;
+  } finally {
+    free(colorPtr);
+  }
+}
+
+/**
+ * Renders one page at `scale` device pixels per point and `rotation` in
+ * degrees; PDFium's inherent /Rotate is compensated for so the output matches
+ * the pdf.js viewport.
+ */
+function renderPage(
+  pageIndex: number,
+  scale: number,
+  rotation: number,
+): PdfNativeTextRender {
+  const api = pdfium!;
+  const geometry = pageRenderGeometry(pageIndex, scale, rotation);
+  const bitmap = api.FPDFBitmap_Create(geometry.width, geometry.height, 1);
   if (!bitmap) {
     throw new Error('Could not allocate a page bitmap.');
   }
 
   try {
-    api.FPDFBitmap_FillRect(bitmap, 0, 0, outWidth, outHeight, 0xffffffff);
+    api.FPDFBitmap_FillRect(
+      bitmap,
+      0,
+      0,
+      geometry.width,
+      geometry.height,
+      0xffffffff,
+    );
     api.FPDF_RenderPageBitmap(
       bitmap,
-      page,
+      geometry.page,
       0,
       0,
-      outWidth,
-      outHeight,
-      rotateParam,
+      geometry.width,
+      geometry.height,
+      geometry.rotateParam,
       1, // FPDF_ANNOT
     );
+    return {
+      width: geometry.width,
+      height: geometry.height,
+      pixels: bitmapPixels(bitmap, geometry.width, geometry.height),
+    };
+  } finally {
+    api.FPDFBitmap_Destroy(bitmap);
+  }
+}
 
-    const bufferPtr = api.FPDFBitmap_GetBuffer(bitmap);
-    const stride = api.FPDFBitmap_GetStride(bitmap);
-    if (!bufferPtr || stride <= 0) {
-      throw new Error('Could not read the rendered page bitmap.');
+/**
+ * Renders a sub-rectangle of a page with the given text objects hidden.
+ *
+ * The inline editor is an HTML field, so the page glyphs it replaces cannot be
+ * removed from the canvas itself. Repainting that rectangle from PDFium with
+ * the edited run's objects made transparent reproduces whatever the page
+ * actually paints there — flat colour, photo, gradient — so the field can sit
+ * on an exact background instead of a sampled guess.
+ *
+ * `region` is in normalized display coordinates (0..1, y down), matching
+ * `run.normRect`; `hiddenObjects` are `FPDF_PAGEOBJECT` handles from the run.
+ */
+function renderRegionMask(
+  pageIndex: number,
+  scale: number,
+  rotation: number,
+  region: PdfRect,
+  hiddenObjects: readonly number[],
+): PdfNativeTextRender {
+  const api = pdfium!;
+  const geometry = pageRenderGeometry(pageIndex, scale, rotation);
+  const startX = Math.max(
+    0,
+    Math.min(geometry.width - 1, Math.round(region.x * geometry.width)),
+  );
+  const startY = Math.max(
+    0,
+    Math.min(geometry.height - 1, Math.round(region.y * geometry.height)),
+  );
+  const width = Math.max(
+    1,
+    Math.min(
+      geometry.width - startX,
+      Math.round(region.width * geometry.width),
+    ),
+  );
+  const height = Math.max(
+    1,
+    Math.min(
+      geometry.height - startY,
+      Math.round(region.height * geometry.height),
+    ),
+  );
+
+  const bitmap = api.FPDFBitmap_Create(width, height, 1);
+  if (!bitmap) {
+    throw new Error('Could not allocate a mask bitmap.');
+  }
+
+  const restore: Array<{
+    ptr: number;
+    fill: PdfColorRgba | null;
+    stroke: PdfColorRgba | null;
+  }> = [];
+
+  try {
+    api.FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0xffffffff);
+
+    // Only touch handles that still belong to this page: a stale pointer from
+    // a replaced run would otherwise be handed to the WASM renderer.
+    const onPage = new Set(buildObjectIndex(geometry.page).keys());
+    for (const ptr of new Set(hiddenObjects)) {
+      if (!ptr || !onPage.has(ptr)) {
+        continue;
+      }
+      let objectType = 0;
+      try {
+        objectType = api.FPDFPageObj_GetType(ptr);
+      } catch {
+        objectType = 0;
+      }
+      if (!objectType) {
+        continue;
+      }
+      const fill = readPageObjectColor(ptr, api.FPDFPageObj_GetFillColor);
+      const stroke = readPageObjectColor(ptr, api.FPDFPageObj_GetStrokeColor);
+      if (fill) {
+        api.FPDFPageObj_SetFillColor(ptr, fill.r, fill.g, fill.b, 0);
+      }
+      if (stroke) {
+        api.FPDFPageObj_SetStrokeColor(ptr, stroke.r, stroke.g, stroke.b, 0);
+      }
+      restore.push({ ptr, fill, stroke });
     }
 
-    const source = heap();
-    const pixels = new Uint8ClampedArray(outWidth * outHeight * 4);
-    for (let y = 0; y < outHeight; y++) {
-      let src = bufferPtr + y * stride;
-      let dst = y * outWidth * 4;
-      for (let x = 0; x < outWidth; x++) {
-        // PDFium bitmaps are BGRA; canvas ImageData expects RGBA.
-        pixels[dst] = source[src + 2];
-        pixels[dst + 1] = source[src + 1];
-        pixels[dst + 2] = source[src];
-        pixels[dst + 3] = source[src + 3];
-        src += 4;
-        dst += 4;
+    api.FPDF_RenderPageBitmap(
+      bitmap,
+      geometry.page,
+      -startX,
+      -startY,
+      geometry.width,
+      geometry.height,
+      geometry.rotateParam,
+      1, // FPDF_ANNOT
+    );
+    return { width, height, pixels: bitmapPixels(bitmap, width, height) };
+  } finally {
+    // The page is rendered synchronously above, so the temporary transparency
+    // never escapes this call and later saves see the original colours.
+    for (const { ptr, fill, stroke } of restore) {
+      if (fill) {
+        api.FPDFPageObj_SetFillColor(ptr, fill.r, fill.g, fill.b, fill.a);
+      }
+      if (stroke) {
+        api.FPDFPageObj_SetStrokeColor(ptr, stroke.r, stroke.g, stroke.b, stroke.a);
       }
     }
-
-    return { width: outWidth, height: outHeight, pixels };
-  } finally {
     api.FPDFBitmap_Destroy(bitmap);
   }
 }
@@ -1858,6 +2263,18 @@ const api: PdfTextEditWorkerApi = {
     return Promise.resolve(fontFamilyInfos(documentFontFaces));
   },
 
+  readFontProgram(
+    name: string,
+    text: string,
+  ): Promise<PdfNativeFontProgram | null> {
+    const program = readFontProgram(name, text);
+    // Move the (potentially multi-megabyte) buffer instead of cloning it on
+    // the UI thread.
+    return Promise.resolve(
+      program ? Comlink.transfer(program, [program.bytes]) : null,
+    );
+  },
+
   applyEdits(
     pageIndex: number,
     edits: readonly PdfNativeTextEdit[],
@@ -1875,6 +2292,18 @@ const api: PdfTextEditWorkerApi = {
     rotation: number,
   ): Promise<PdfNativeTextRender> {
     return Promise.resolve(renderPage(pageIndex, scale, rotation));
+  },
+
+  renderRegionMask(
+    pageIndex: number,
+    scale: number,
+    rotation: number,
+    region: PdfRect,
+    hiddenObjects: readonly number[],
+  ): Promise<PdfNativeTextRender> {
+    return Promise.resolve(
+      renderRegionMask(pageIndex, scale, rotation, region, hiddenObjects),
+    );
   },
 
   reset(): void {

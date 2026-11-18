@@ -11,25 +11,38 @@
   box-sizing: border-box;
   width: 100%;
   height: 100%;
-  min-width: 4ch;
-  padding: 1px 3px;
+  // No padding or border: the text origin must be the box's top-left corner
+  // so the caller can place the ink box exactly on the page's ink box.
+  padding: 0;
   margin: 0;
-  border: 1px dashed rgba(37, 99, 235, 0.55);
-  border-radius: 3px;
-  outline: none;
-  background: #ffffff;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.16);
-  line-height: 1.25;
-  letter-spacing: inherit;
+  border: 0;
+  border-radius: 0;
+  // Thin ring only: the caller paints the page's own colour behind the field
+  // (and over the glyphs it replaces), so a heavy border would read as a
+  // floating box instead of in-place editing.
+  outline: 1px solid rgba(37, 99, 235, 0.5);
+  outline-offset: 0;
+  // Transparent on purpose: the backdrop under the field is the page colour,
+  // so the preview shows the page exactly as the committed text will.
+  background: transparent;
+  box-shadow: none;
+  // `line-height: 1` is what `nativeFontMetrics()` measures against.
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  // PDF text objects advance glyph by glyph from the font's widths; they do
+  // not kern. Letting the browser kern (or round advances) moved the words
+  // that were not edited, so the field must reproduce the document's metrics.
+  font-kerning: none;
+  text-rendering: geometricPrecision;
   white-space: pre;
-  overflow: auto;
+  overflow: hidden;
   resize: none;
   caret-color: currentColor;
 
   &:focus {
-    border-style: solid;
-    border-color: #2563eb;
-    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.28), 0 2px 10px rgba(15, 23, 42, 0.16);
+    outline-color: #2563eb;
+    box-shadow: none;
   }
 
   &:disabled {
@@ -38,7 +51,7 @@
   }
 
   &::selection {
-    background: rgba(37, 99, 235, 0.25);
+    background: rgba(37, 99, 235, 0.32);
   }
 }
 
@@ -50,8 +63,9 @@
 
 @media (forced-colors: active) {
   .native-text-edit__area {
-    background: Field;
-    color: FieldText;
-    border-color: CanvasText;
+    // Keep the page visible: the original glyphs stand in for the preview
+    // until the value changes, and a system field background would cover them.
+    background: transparent;
+    outline-color: CanvasText;
   }
 }

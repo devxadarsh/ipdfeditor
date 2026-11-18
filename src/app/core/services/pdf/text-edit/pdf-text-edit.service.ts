@@ -6,6 +6,7 @@ import type {
   PdfNativeTextEdit,
   PdfNativeTextPageInfo,
   PdfNativeTextRender,
+  PdfRect,
   PdfTextEditWorkerApi,
 } from './pdfium-text-edit.types';
 
@@ -14,6 +15,14 @@ export type PdfTextEditStatus = 'idle' | 'opening' | 'ready' | 'error';
 export interface PdfNativeHistoryResult {
   readonly bytes: ArrayBuffer;
   readonly pageIndex: number;
+}
+
+/** A document font registered with the browser for inline-edit previews. */
+export interface NativeFontFaceHandle {
+  /** CSS `font-family` value that resolves to the embedded program. */
+  readonly css: string;
+  readonly bold: boolean;
+  readonly italic: boolean;
 }
 
 interface NativeHistoryEntry {
@@ -69,6 +78,16 @@ export class PdfTextEditService implements OnDestroy {
   private fontFamilies: PdfNativeFontFamilyInfo[] | null = null;
   /** PDFium object handles are invalidated after every page edit. */
   private readonly stalePages = new Set<number>();
+  /** Embedded faces loaded into the browser, keyed by face name. */
+  private readonly fontFaceHandles = new Map<string, NativeFontFaceHandle>();
+  private readonly fontFaceTasks = new Map<
+    string,
+    Promise<NativeFontFaceHandle | null>
+  >();
+  /** Per (face, text) coverage verdicts so a bad subset is not re-probed. */
+  private readonly fontFaceCoverage = new Map<string, boolean>();
+  private readonly registeredFontFaces: FontFace[] = [];
+  private fontFaceSeq = 0;
   /**
    * Identifies the run whose style was applied last. Consecutive style-only
    * edits to the same run collapse into one undo entry.
@@ -128,6 +147,7 @@ export class PdfTextEditService implements OnDestroy {
       this.currentBytes = bytes;
       this.runCache.clear();
       this.fontFamilies = null;
+      this.clearFontFaces();
       this.stalePages.clear();
       this.undoStack.length = 0;
       this.redoStack.length = 0;
@@ -152,6 +172,89 @@ export class PdfTextEditService implements OnDestroy {
       this.fontFamilies = await this.getApi().listFonts();
     }
     return this.fontFamilies;
+  }
+
+  /**
+   * Registers an embedded document font with the FontFace API so the inline
+   * editor can render the real typeface while typing.
+   *
+   * Returns `null` (and the caller keeps its generic fallback stack) for fonts
+   * the browser cannot load, such as embedded Type 1 programs.
+   */
+  async ensureFontFace(
+    name: string,
+    text: string,
+  ): Promise<NativeFontFaceHandle | null> {
+    const key = (name || '').trim().toLowerCase();
+    if (!key || this.status() !== 'ready') {
+      return null;
+    }
+    const ready = this.fontFaceHandles.get(key);
+    if (ready) {
+      return ready;
+    }
+    const probeKey = `${key}\u0000${text}`;
+    if (this.fontFaceCoverage.get(probeKey) === false) {
+      return null;
+    }
+    const pending = this.fontFaceTasks.get(probeKey);
+    if (pending) {
+      return pending;
+    }
+    const task = this.loadFontFace(key, text)
+      .then((handle) => {
+        this.fontFaceCoverage.set(probeKey, handle !== null);
+        return handle;
+      })
+      .catch(() => null)
+      .finally(() => this.fontFaceTasks.delete(probeKey));
+    this.fontFaceTasks.set(probeKey, task);
+    return task;
+  }
+
+  private async loadFontFace(
+    key: string,
+    text: string,
+  ): Promise<NativeFontFaceHandle | null> {
+    if (
+      typeof document === 'undefined' ||
+      typeof FontFace === 'undefined' ||
+      !document.fonts
+    ) {
+      return null;
+    }
+    const program = await this.getApi().readFontProgram(key, text);
+    if (!program || program.bytes.byteLength === 0) {
+      return null;
+    }
+    const family = `pdfnative-${++this.fontFaceSeq}`;
+    const face = new FontFace(family, program.bytes, {
+      weight: program.bold ? '700' : '400',
+      style: program.italic ? 'italic' : 'normal',
+    });
+    await face.load();
+    document.fonts.add(face);
+    this.registeredFontFaces.push(face);
+    const handle: NativeFontFaceHandle = {
+      css: `"${family}"`,
+      bold: program.bold,
+      italic: program.italic,
+    };
+    this.fontFaceHandles.set(key, handle);
+    return handle;
+  }
+
+  /** Drops preview faces; the next edit reloads only the fonts it needs. */
+  private clearFontFaces(): void {
+    this.fontFaceHandles.clear();
+    this.fontFaceTasks.clear();
+    this.fontFaceCoverage.clear();
+    if (typeof document !== 'undefined' && document.fonts) {
+      for (const face of this.registeredFontFaces) {
+        document.fonts.delete(face);
+      }
+    }
+    this.registeredFontFaces.length = 0;
   }
 
   /** Returns the editable text objects for a page (cached until edited). */
@@ -296,10 +399,37 @@ export class PdfTextEditService implements OnDestroy {
     return this.getApi().renderPage(pageIndex, scale, rotation);
   }
 
+  /**
+   * Exact page background for the glyphs an inline edit replaces.
+   *
+   * `region` is normalized display space (0..1, y down); the worker renders it
+   * with the run's objects made transparent, so the inline field can stand on
+   * the page's real background instead of a sampled flat colour.
+   */
+  async renderRegionMask(
+    pageIndex: number,
+    scale: number,
+    rotation: number,
+    region: PdfRect,
+    hiddenObjects: readonly number[],
+  ): Promise<PdfNativeTextRender> {
+    if (this.status() !== 'ready') {
+      throw new Error('The text editing engine is not ready.');
+    }
+    return this.getApi().renderRegionMask(
+      pageIndex,
+      scale,
+      rotation,
+      region,
+      hiddenObjects,
+    );
+  }
+
   /** Drops the worker document and all cached state. */
   reset(): void {
     this.runCache.clear();
     this.fontFamilies = null;
+    this.clearFontFaces();
     this.stalePages.clear();
     this.undoStack.length = 0;
     this.redoStack.length = 0;

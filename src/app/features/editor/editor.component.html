@@ -1758,20 +1758,54 @@
                 }
                 @if (activeNativeEdit(); as edit) {
                   @if (edit.pageId === page.id) {
+                    <!-- Hidden until the text changes: while the field still
+                         matches the page, the page's own glyphs are shown. -->
+                    <div
+                      class="editor__native-edit-backdrop"
+                      aria-hidden="true"
+                      [style.visibility]="
+                        edit.text !== edit.initialText ? 'visible' : 'hidden'
+                      "
+                      [style.left.px]="edit.backdropRect.left"
+                      [style.top.px]="edit.backdropRect.top"
+                      [style.width.px]="edit.backdropRect.width"
+                      [style.height.px]="edit.backdropRect.height"
+                    >
+                      @if (edit.backdrop) {
+                        <div
+                          class="editor__native-edit-backdrop__fill"
+                          [style.background]="edit.backdrop"
+                        ></div>
+                      }
+                      <app-native-text-backdrop
+                        [pageIndex]="edit.run.pageIndex"
+                        [rotation]="page.rotation"
+                        [scale]="getPageDisplaySize(page).scale"
+                        [region]="edit.backdropRegion"
+                        [hiddenObjects]="edit.run.objectIndices"
+                      ></app-native-text-backdrop>
+                    </div>
                     <app-native-text-edit
                       [style.left.px]="edit.left"
                       [style.top.px]="edit.top"
                       [style.width.px]="edit.width"
                       [style.height.px]="edit.height"
+                      [style.transform]="
+                        edit.scaleX !== 1 ? 'scaleX(' + edit.scaleX + ')' : null
+                      "
+                      style="transform-origin: 0 0"
                       [value]="edit.initialText"
                       [fontSizePx]="edit.fontSizePx"
                       [fontFamily]="edit.fontFamily"
                       [color]="edit.color"
                       [bold]="edit.bold"
                       [italic]="edit.italic"
+                      [strokePx]="edit.strokePx"
+                      [textVisible]="edit.text !== edit.initialText"
                       [busy]="textEdit.applying()"
                       (committed)="onNativeEditCommit($event)"
                       (cancelled)="onNativeEditCancel()"
+                      (edited)="onNativeEditGrow($event)"
                     ></app-native-text-edit>
                   }
                 }

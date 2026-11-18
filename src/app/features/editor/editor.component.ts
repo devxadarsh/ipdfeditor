@@ -67,10 +67,6 @@ import type {
   PdfNativeTextEdit,
   PdfNativeTextRun,
 } from '../../core/services/pdf/text-edit/pdfium-text-edit.types';
-import {
-  isBoldFontName,
-  isItalicFontName,
-} from '../../core/utilities/native-text-style.util';
 import type {
   NativeTextStyle,
   NativeTextTargetView,
@@ -82,10 +78,15 @@ import { DocumentStorageService } from '../../core/services/storage/document-sto
 import { RecentFilesService, RecentFileEntry } from '../../core/services/storage/recent-files.service';
 import { formatRelativeTime } from '../../core/utilities/time.util';
 import { formatBytes } from '../../core/utilities/file.util';
+import {
+  dominantColor,
+  type ColorSample,
+} from '../../core/utilities/color.util';
 import { PdfPageComponent } from './components/pdf-page/pdf-page.component';
 import { EditorOverlayComponent } from './components/editor-overlay/editor-overlay.component';
 import { NativeTextEditComponent } from './components/native-text-edit/native-text-edit.component';
 import { NativePageRenderComponent } from './components/native-page-render/native-page-render.component';
+import { NativeTextBackdropComponent } from './components/native-text-backdrop/native-text-backdrop.component';
 import { PropertiesPanelComponent } from './components/properties-panel/properties-panel.component';
 import { PagesPanelComponent } from './components/pages-panel/pages-panel.component';
 import { EditorPage } from './models/editor-page.model';
@@ -123,11 +124,42 @@ interface ActiveNativeTextEdit {
   readonly width: number;
   readonly height: number;
   readonly initialText: string;
+  /** Text currently in the field (grows the box beyond `initialText`). */
+  readonly text: string;
   readonly fontSizePx: number;
   readonly fontFamily: string;
+  /** Horizontal `Tz` scale of the run, so preview advances match the page. */
+  readonly scaleX: number;
   readonly color: string;
   readonly bold: boolean;
   readonly italic: boolean;
+  /** Faux-bold stroke width in display pixels (0 when not stroked). */
+  readonly strokePx: number;
+  /**
+   * Whether the preview uses the document's own embedded face. With the real
+   * program the preview can use the PDF's exact size and horizontal scale
+   * instead of compensating for a substitute font.
+   */
+  readonly fontIsDocument: boolean;
+  /**
+   * Opaque page colour painted behind the field to hide the glyphs it
+   * replaces. `null` when the area is not flat.
+   */
+  readonly backdrop: string | null;
+  /** Exact page repaint of the run box from PDFium, glyphs hidden. */
+  readonly backdropRegion: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  /** Mask of the run's ink box in page-frame CSS pixels. */
+  readonly backdropRect: {
+    readonly left: number;
+    readonly top: number;
+    readonly width: number;
+    readonly height: number;
+  };
 }
 
 /**
@@ -154,6 +186,22 @@ interface NativeTextSelection extends NativeTextTargetView {
   readonly effectiveFontSize: number;
 }
 
+/** Shared 2D context used to measure fonts without touching page layout. */
+let measureContext: CanvasRenderingContext2D | null = null;
+
+function nativeMeasureContext(): CanvasRenderingContext2D | null {
+  if (measureContext || typeof document === 'undefined') {
+    return measureContext;
+  }
+  measureContext = document.createElement('canvas').getContext('2d');
+  if (measureContext) {
+    // Mirror the editor field's CSS (`font-kerning: none`): metrics are only
+    // useful if they describe the layout the field actually produces.
+    measureContext.fontKerning = 'none';
+  }
+  return measureContext;
+}
+
 @Component({
   selector: 'app-editor',
   standalone: true,
@@ -169,6 +217,7 @@ interface NativeTextSelection extends NativeTextTargetView {
     PdfPageComponent,
     EditorOverlayComponent,
     NativeTextEditComponent,
+    NativeTextBackdropComponent,
     NativePageRenderComponent,
     PropertiesPanelComponent,
     PagesPanelComponent,
@@ -1498,9 +1547,20 @@ export class EditorComponent implements OnDestroy {
           this.activeNativeEdit.set(null);
           return;
         }
+        const strokePx = this.nativeStrokePx(edit.run, page, edit.bold);
         this.activeNativeEdit.set({
           ...edit,
-          ...this.nativeEditBox(edit.run, page),
+          ...this.nativeEditLayout(edit.run, page, {
+            fontFamily: edit.fontFamily,
+            text: edit.text,
+            bold: edit.bold,
+            italic: edit.italic,
+            strokePx,
+            fontIsDocument: edit.fontIsDocument,
+          }),
+          // The font-family list is kept as-is so a loaded web font survives.
+          fontFamily: edit.fontFamily,
+          strokePx,
         });
       });
     });
@@ -2586,36 +2646,447 @@ export class EditorComponent implements OnDestroy {
     this.openNativeEditor(best, page);
   }
 
-  private nativeEditBox(
+  /**
+   * Faux-bold stroke width in display pixels for the inline preview.
+   *
+   * PDFs emulate bold with a text render mode instead of a bold face, so the
+   * preview paints that same stroke when `bold` does not refer to a real face.
+   * Used for the first paint, every zoom relayout and the post-font upgrade so
+   * those paths cannot diverge.
+   */
+  private nativeStrokePx(
     run: MappedNativeTextRun,
     page: EditorPage,
+    bold: boolean,
+  ): number {
+    if (bold || !run.strokeBold) {
+      return 0;
+    }
+    const scale = run.matrixScale > 0 ? run.matrixScale : 1;
+    return Math.max(
+      0.15,
+      run.strokeWidth * scale * this.getPageDisplaySize(page).scale,
+    );
+  }
+
+  /**
+   * Places the inline editor on the run's real baseline.
+   *
+   * The field is a plain `<textarea>`, so the browser lays out its first line
+   * from the top of the box. Measuring the font's ascent gives the exact
+   * offset between the box top and the baseline, and measuring the text gives
+   * a box that fits what the browser actually paints — the PDF advance table
+   * (or the fallback font before the embedded face loads) can be a few percent
+   * wider, which used to clip the last characters.
+   */
+  private nativeEditLayout(
+    run: MappedNativeTextRun,
+    page: EditorPage,
+    preview: {
+      readonly fontFamily: string;
+      readonly text: string;
+      readonly bold: boolean;
+      readonly italic: boolean;
+      readonly strokePx: number;
+      readonly fontIsDocument: boolean;
+    },
   ): {
     left: number;
     top: number;
     width: number;
     height: number;
     fontSizePx: number;
+    scaleX: number;
+    backdropRect: {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+    };
+    backdropRegion: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
   } {
     const size = this.getPageDisplaySize(page);
-    const fontSizePx = Math.max(
-      9,
-      Math.min(96, run.fontSize * run.matrixScale * size.scale),
+    // Glyph height follows the matrix's vertical scale; the determinant-based
+    // `matrixScale` mixes in the horizontal scale (`Tz`), so it is only the
+    // fallback here.
+    const verticalScale =
+      Math.hypot(run.matrix[2] ?? 0, run.matrix[3] ?? 0) ||
+      (run.matrixScale > 0 ? run.matrixScale : 1);
+    const horizontalScale =
+      Math.hypot(run.matrix[0] ?? 0, run.matrix[1] ?? 0) || verticalScale;
+    const nominalFontSizePx = Math.max(
+      1,
+      Math.min(400, run.fontSize * verticalScale * size.scale),
     );
+    const metrics = this.nativeFontMetrics({
+      fontFamily: preview.fontFamily,
+      fontSizePx: nominalFontSizePx,
+      text: preview.text,
+      // Calibrate against the run's original string so the size stays stable
+      // while the user types characters with different ascenders/descenders.
+      referenceText: run.text,
+      bold: preview.bold,
+      italic: preview.italic,
+      strokePx: preview.strokePx,
+      // With the document's own program the requested size is already the
+      // size the page paints, so calibrating would only move glyph advances.
+      // A substitute face still needs the ink-height correction.
+      targetInkHeight: preview.fontIsDocument
+        ? undefined
+        : run.normRect.height * size.height,
+    });
+
+    // Place the preview so its glyphs land exactly where the page paints
+    // them. The page's box starts at the first inked glyph, which is why the
+    // browser's own left bearing is removed below; runs that start with
+    // whitespace are the exception (see `leadingWhitespace`).
+    const pageInkLeft = run.normRect.x * size.width;
+    const pageInkTop = run.normRect.y * size.height;
+    const pageInkWidth = run.normRect.width * size.width;
+    // With the document face the PDF's own horizontal text scale reproduces
+    // every glyph advance exactly, so the text only moves where it is edited.
+    const tzScale = verticalScale > 0 ? horizontalScale / verticalScale : 1;
+    // PDFium measures a text object from its *text origin* when the string
+    // starts with whitespace: the leading spaces advance the pen but leave no
+    // ink to trim, so the reported left edge is the origin, not the first
+    // glyph. `metrics.inkLeft` is the browser's leading-space advance, and
+    // subtracting it too would place the preview one indent to the left of the
+    // page — the jump that made indented list items lose their white space.
+    const leadingWhitespace = /^\s/.test(run.text);
+    // `inkLeft` is the leading advance when the page text starts with
+    // whitespace (positive) and the first glyph's side bearing otherwise
+    // (negative or zero), so adding only its positive part keeps the fit
+    // comparing the same extent the page's box covers.
+    const measuredInk = metrics.inkWidth + Math.max(0, metrics.inkLeft);
+    let scaleX = tzScale;
+    if (!preview.fontIsDocument && measuredInk > 0.5 && pageInkWidth > 0) {
+      // A substitute face has different advances; fit its ink box to the
+      // run's so the line keeps the page's length.
+      const fit = pageInkWidth / measuredInk;
+      // A wild ratio means the measurement is unreliable (or the page paints
+      // something else); the run's own text scale is the safer fallback.
+      if (fit >= 0.5 && fit <= 2) {
+        scaleX = fit;
+      }
+    }
+
+    const backdrop = this.nativeBackdropGeometry(run, size);
     return {
-      left: Math.max(0, run.normRect.x * size.width - 2),
-      top: Math.max(0, run.normRect.y * size.height - 2),
-      width: Math.max(90, run.normRect.width * size.width + 8),
-      height: Math.max(
-        fontSizePx * 1.6,
-        run.normRect.height * size.height + 4,
+      left: Math.max(
+        0,
+        pageInkLeft - (leadingWhitespace ? 0 : metrics.inkLeft * scaleX),
       ),
-      fontSizePx,
+      top: Math.max(0, pageInkTop - (metrics.baselineOffset - metrics.inkAscent)),
+      width: Math.max(24, metrics.textWidth + 10),
+      height: metrics.lineHeight + 2 + preview.strokePx,
+      fontSizePx: metrics.fontSizePx,
+      scaleX,
+      backdropRect: backdrop.rect,
+      backdropRegion: backdrop.region,
+    };
+  }
+
+  /**
+   * Mask box for the run's glyphs: CSS pixels for layout and normalized
+   * display coordinates for the PDFium patch render.
+   *
+   * The inline field is an HTML element, so the browser cannot replace the
+   * glyphs inside the canvas. Painting the page's own background over the
+   * run's ink box hides them, which is what makes the field read like the
+   * text itself rather than an overlay on top of it.
+   */
+  private nativeBackdropGeometry(
+    run: MappedNativeTextRun,
+    size: { width: number; height: number },
+  ): {
+    rect: { left: number; top: number; width: number; height: number };
+    region: { x: number; y: number; width: number; height: number };
+  } {
+    const box = run.normRect;
+    // A few pixels of padding cover antialiasing and italic overhang.
+    const pad = 3;
+    const left = Math.max(0, box.x * size.width - pad);
+    const top = Math.max(0, box.y * size.height - pad);
+    const right = Math.min(
+      size.width,
+      (box.x + box.width) * size.width + pad,
+    );
+    const bottom = Math.min(
+      size.height,
+      (box.y + box.height) * size.height + pad,
+    );
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    return {
+      rect: { left, top, width, height },
+      region: {
+        x: size.width > 0 ? left / size.width : 0,
+        y: size.height > 0 ? top / size.height : 0,
+        width: size.width > 0 ? width / size.width : 0,
+        height: size.height > 0 ? height / size.height : 0,
+      },
+    };
+  }
+
+  /**
+   * Flat colour the page paints behind a run, sampled from its canvas.
+   *
+   * This is only the instantaneous fallback shown while the exact PDFium
+   * patch (`NativeTextBackdropComponent`) renders, so flat paper looks masked
+   * immediately. Samples come from a ring around the glyph box, so the run's
+   * own ink and the antialiasing halo do not skew the estimate.
+   */
+  private sampleRunBackdrop(
+    run: MappedNativeTextRun,
+    page: EditorPage,
+  ): string | null {
+    if (typeof document === 'undefined') {
+      return null;
+    }
+    const wrapper = document.getElementById(`page-wrapper-${page.id}`);
+    const canvases = wrapper?.querySelectorAll<HTMLCanvasElement>(
+      'app-pdf-page canvas, app-native-page-render canvas',
+    );
+    if (!canvases?.length) {
+      return null;
+    }
+
+    // The PDFium overlay is painted after the pdf.js canvas, so the last
+    // non-empty one is what the user actually sees under the run.
+    let canvas: HTMLCanvasElement | null = null;
+    for (const candidate of Array.from(canvases)) {
+      if (candidate.width > 0 && candidate.height > 0) {
+        canvas = candidate;
+      }
+    }
+    if (!canvas) {
+      return null;
+    }
+
+    const bounds = canvas.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) {
+      return null;
+    }
+    const pixelsPerCssX = canvas.width / bounds.width;
+    const pixelsPerCssY = canvas.height / bounds.height;
+    if (
+      !Number.isFinite(pixelsPerCssX) ||
+      !Number.isFinite(pixelsPerCssY) ||
+      pixelsPerCssX <= 0 ||
+      pixelsPerCssY <= 0
+    ) {
+      return null;
+    }
+
+    const box = run.normRect;
+    const boxLeft = box.x * bounds.width;
+    const boxTop = box.y * bounds.height;
+    const boxRight = (box.x + box.width) * bounds.width;
+    const boxBottom = (box.y + box.height) * bounds.height;
+    const pad = 8;
+    const x0 = Math.max(0, Math.floor((boxLeft - pad) * pixelsPerCssX));
+    const y0 = Math.max(0, Math.floor((boxTop - pad) * pixelsPerCssY));
+    const x1 = Math.min(
+      canvas.width,
+      Math.ceil((boxRight + pad) * pixelsPerCssX),
+    );
+    const y1 = Math.min(
+      canvas.height,
+      Math.ceil((boxBottom + pad) * pixelsPerCssY),
+    );
+    const width = x1 - x0;
+    const height = y1 - y0;
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+
+    let pixels: Uint8ClampedArray;
+    try {
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) {
+        return null;
+      }
+      pixels = context.getImageData(x0, y0, width, height).data;
+    } catch {
+      // Tainted or detached canvas: keep the transparent field.
+      return null;
+    }
+
+    const samples: ColorSample[] = [];
+    // Bound the work for page-wide runs; a few hundred samples are plenty.
+    const step = Math.max(1, Math.ceil(Math.sqrt((width * height) / 1500)));
+    for (let py = 0; py < height; py += step) {
+      for (let px = 0; px < width; px += step) {
+        const cssX = (x0 + px) / pixelsPerCssX;
+        const cssY = (y0 + py) / pixelsPerCssY;
+        const dx =
+          cssX < boxLeft ? boxLeft - cssX : cssX > boxRight ? cssX - boxRight : 0;
+        const dy =
+          cssY < boxTop ? boxTop - cssY : cssY > boxBottom ? cssY - boxBottom : 0;
+        // Skip the glyph box and the 1.5px antialiasing halo around it.
+        if (Math.max(dx, dy) < 1.5) {
+          continue;
+        }
+        const index = (py * width + px) * 4;
+        if (pixels[index + 3] < 240) {
+          continue;
+        }
+        samples.push({
+          r: pixels[index],
+          g: pixels[index + 1],
+          b: pixels[index + 2],
+        });
+      }
+    }
+    return dominantColor(samples);
+  }
+
+  /**
+   * Baseline offset, line height, painted width and ink box of the run's text.
+   *
+   * Measured from the font the browser will actually paint, which is the
+   * embedded document program once `ensureFontFace()` has registered it. The
+   * ink box (left bearing, width, ascent) lets the caller place the preview so
+   * its glyphs start and end exactly where the page's glyphs do.
+   */
+  private nativeFontMetrics(preview: {
+    readonly fontFamily: string;
+    readonly fontSizePx: number;
+    readonly text: string;
+    readonly referenceText: string;
+    readonly bold: boolean;
+    readonly italic: boolean;
+    readonly strokePx: number;
+    readonly targetInkHeight?: number;
+  }): {
+    fontSizePx: number;
+    baselineOffset: number;
+    lineHeight: number;
+    textWidth: number;
+    /** Left edge of the ink relative to the text origin (px). */
+    inkLeft: number;
+    /** Painted width of the ink (px). */
+    inkWidth: number;
+    /** Baseline → top of the ink (px). */
+    inkAscent: number;
+  } {
+    const measureAt = (size: number) => {
+      const estimate = {
+        ascent: size * 0.8,
+        descent: size * 0.2,
+        textWidth: size * 0.6 * Math.max(1, preview.text.length),
+        inkHeight: size * 0.73,
+        inkLeft: 0,
+        inkWidth: size * 0.6 * Math.max(1, preview.referenceText.length),
+        inkAscent: size * 0.8,
+      };
+      const ctx = nativeMeasureContext();
+      if (!ctx) {
+        return estimate;
+      }
+      try {
+        // Mirror the textarea's exact CSS font: a synthesized bold or italic
+        // is wider than the regular face, and the stroke adds to the ink box.
+        ctx.font =
+          `${preview.italic ? 'italic ' : ''}` +
+          `${preview.bold ? '700' : '400'} ` +
+          `${size}px ${preview.fontFamily}`;
+        const line = ctx.measureText('Hg');
+        const ascent =
+          Number.isFinite(line.fontBoundingBoxAscent) &&
+          line.fontBoundingBoxAscent > 0
+            ? line.fontBoundingBoxAscent
+            : estimate.ascent;
+        const descent =
+          Number.isFinite(line.fontBoundingBoxDescent) &&
+          line.fontBoundingBoxDescent > 0
+            ? line.fontBoundingBoxDescent
+            : estimate.descent;
+        let textWidth = estimate.textWidth;
+        let inkHeight = estimate.inkHeight;
+        let inkLeft = 0;
+        let inkWidth = estimate.inkWidth;
+        let inkAscent = estimate.inkAscent;
+        if (preview.text) {
+          const ink = ctx.measureText(preview.text);
+          if (Number.isFinite(ink.width) && ink.width > 0) {
+            textWidth = ink.width;
+          }
+        }
+        // The ink box always comes from the original string, never from what
+        // is currently typed: the calibration and fit must stay constant.
+        if (preview.referenceText) {
+          const reference = ctx.measureText(preview.referenceText);
+          const referenceAscent = reference.actualBoundingBoxAscent;
+          const referenceDescent = reference.actualBoundingBoxDescent;
+          const referenceLeft = reference.actualBoundingBoxLeft;
+          const referenceRight = reference.actualBoundingBoxRight;
+          if (
+            Number.isFinite(referenceAscent) &&
+            Number.isFinite(referenceDescent) &&
+            referenceAscent + Math.abs(referenceDescent) > 0
+          ) {
+            inkHeight = referenceAscent + Math.abs(referenceDescent);
+          }
+          if (
+            Number.isFinite(referenceLeft) &&
+            Number.isFinite(referenceRight) &&
+            referenceRight + referenceLeft > 0
+          ) {
+            // `actualBoundingBoxLeft` is positive when the ink starts left of
+            // the text origin, so the local left bearing is its negation.
+            inkLeft = -referenceLeft - preview.strokePx / 2;
+            inkWidth = referenceRight + referenceLeft + preview.strokePx;
+          }
+          if (Number.isFinite(referenceAscent) && referenceAscent > 0) {
+            inkAscent = referenceAscent + preview.strokePx / 2;
+          }
+        }
+        return { ascent, descent, textWidth, inkHeight, inkLeft, inkWidth, inkAscent };
+      } catch {
+        return estimate;
+      }
+    };
+
+    let size = preview.fontSizePx;
+    let metrics = measureAt(size);
+    // Calibrate to the height the page actually paints: a fallback face
+    // (before the embedded program loads, or a Type 1 program) has a different
+    // cap/x-height at the same em size and would otherwise look larger.
+    const target = preview.targetInkHeight ?? 0;
+    if (target > 0 && metrics.inkHeight > 0) {
+      const ratio = (target - preview.strokePx) / metrics.inkHeight;
+      // Bounded so a bad bounds estimate can never double or halve the text.
+      if (ratio >= 0.6 && ratio <= 1.6) {
+        size = Math.max(1, Math.min(400, size * ratio));
+        metrics = measureAt(size);
+      }
+    }
+
+    return {
+      fontSizePx: size,
+      // CSS half-leading centres the font box in the `line-height: 1` line.
+      baselineOffset: (size - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent,
+      lineHeight: metrics.ascent + metrics.descent,
+      textWidth: metrics.textWidth + preview.strokePx,
+      inkLeft: metrics.inkLeft,
+      inkWidth: metrics.inkWidth,
+      inkAscent: metrics.inkAscent,
     };
   }
 
   private openNativeEditor(run: MappedNativeTextRun, page: EditorPage): void {
     const scale = run.matrixScale > 0 ? run.matrixScale : 1;
     const effectiveFontSize = Math.round(run.fontSize * scale * 100) / 100;
+    const faceBold = run.fontBold;
+    const faceItalic = run.fontItalic;
+    const fallbackFamily = this.nativeFontFamily(run.fontFamily, run.fontName);
+    const strokePx = this.nativeStrokePx(run, page, faceBold);
     this.nativeSelection.set({
       pageId: page.id,
       pageIndex: run.pageIndex,
@@ -2633,8 +3104,8 @@ export class EditorComponent implements OnDestroy {
         fontSize: effectiveFontSize,
         // Reflect the embedded face: a `Carlito-Bold` run starts with Bold on
         // so applying it again cannot add another layer of emphasis.
-        bold: isBoldFontName(run.fontName),
-        italic: isItalicFontName(run.fontName),
+        bold: faceBold,
+        italic: faceItalic,
         underline: false,
         strikethrough: false,
         color: run.color,
@@ -2643,30 +3114,111 @@ export class EditorComponent implements OnDestroy {
     this.activeNativeEdit.set({
       run,
       pageId: page.id,
-      ...this.nativeEditBox(run, page),
+      ...this.nativeEditLayout(run, page, {
+        fontFamily: fallbackFamily,
+        text: run.text,
+        bold: faceBold,
+        italic: faceItalic,
+        strokePx,
+        fontIsDocument: false,
+      }),
       initialText: run.text,
-      fontFamily: this.nativeFontFamily(run.fontName),
+      text: run.text,
+      fontFamily: fallbackFamily,
+      fontIsDocument: false,
+      backdrop: this.sampleRunBackdrop(run, page),
       color: `rgba(${run.color.r}, ${run.color.g}, ${run.color.b}, ${
         run.color.a / 255
       })`,
-      bold: isBoldFontName(run.fontName),
-      italic: isItalicFontName(run.fontName),
+      bold: faceBold,
+      italic: faceItalic,
+      strokePx,
+    });
+
+    // Upgrade the preview to the document's own font program once the worker
+    // has handed it over; the fallback stack is shown until then.
+    void this.textEdit.ensureFontFace(run.fontName, run.text).then((handle) => {
+      const active = this.activeNativeEdit();
+      if (!handle || !active || active.run.id !== run.id) {
+        return;
+      }
+      // Re-read the page: the user may have zoomed while the font loaded.
+      const current =
+        this.pagesStore.pages().find((p) => p.id === page.id) ?? page;
+      const family = `${handle.css}, ${fallbackFamily}`;
+      // Keep the run's emphasis even if the loaded program reports a plain
+      // face: asking for 700 lets the browser synthesize the missing weight
+      // instead of silently previewing regular text.
+      const previewBold = faceBold || handle.bold;
+      const previewItalic = faceItalic || handle.italic;
+      const nextStrokePx = this.nativeStrokePx(run, current, previewBold);
+      this.activeNativeEdit.set({
+        ...active,
+        ...this.nativeEditLayout(run, current, {
+          fontFamily: family,
+          text: active.text,
+          bold: previewBold,
+          italic: previewItalic,
+          strokePx: nextStrokePx,
+          fontIsDocument: true,
+        }),
+        fontFamily: family,
+        fontIsDocument: true,
+        bold: previewBold,
+        italic: previewItalic,
+        // A real bold face must not also be stroked, and a regular face that
+        // the PDF strokes should show that stroke instead of synthetic bold.
+        strokePx: nextStrokePx,
+      });
     });
   }
 
-  private nativeFontFamily(fontName: string): string {
-    const name = (fontName || '').toLowerCase();
-    if (/times|serif|georgia|garamond|cambria/.test(name)) {
-      return "'Times New Roman', Times, serif";
-    }
-    if (/courier|mono|consol/.test(name)) {
-      return "'Courier New', Courier, monospace";
-    }
-    return 'Arial, Helvetica, sans-serif';
+  private nativeFontFamily(family: string, fontName: string): string {
+    const name = `${family || ''} ${fontName || ''}`.toLowerCase();
+    const generic = /mono|courier|consol/.test(name)
+      ? 'monospace'
+      : /serif|times|georgia|garamond|cambria/.test(name)
+        ? 'serif'
+        : 'sans-serif';
+    // Prefer the family name so a locally installed copy is used verbatim; the
+    // embedded program (when loadable) is prepended by openNativeEditor().
+    const preferred = (family || '').trim();
+    return preferred
+      ? `"${preferred.replace(/"/g, '')}", ${generic}`
+      : generic;
   }
 
   onNativeEditCancel(): void {
     this.activeNativeEdit.set(null);
+  }
+
+  /**
+   * Widen the inline box while typing.
+   *
+   * The box is sized from the painted text so the preview exactly covers the
+   * run it replaces; the field grows with the value instead of clipping it.
+   */
+  onNativeEditGrow(text: string): void {
+    const edit = this.activeNativeEdit();
+    if (!edit) {
+      return;
+    }
+    const page = this.pagesStore.pages().find((p) => p.id === edit.pageId);
+    if (!page) {
+      return;
+    }
+    this.activeNativeEdit.set({
+      ...edit,
+      text,
+      ...this.nativeEditLayout(edit.run, page, {
+        fontFamily: edit.fontFamily,
+        text,
+        bold: edit.bold,
+        italic: edit.italic,
+        strokePx: edit.strokePx,
+        fontIsDocument: edit.fontIsDocument,
+      }),
+    });
   }
 
   /** Builds the worker edit for a style, rebuilding from the original geometry. */
