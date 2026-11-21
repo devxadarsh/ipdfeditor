@@ -2528,6 +2528,82 @@
   touch-action: pan-x pan-y pinch-zoom;
 }
 
+// Persistent markers for every editable section while the text tool is on.
+// They sit under the hit layer and never intercept input.
+.editor__native-section-box {
+  position: absolute;
+  z-index: 39;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 1px dashed rgba(37, 99, 235, 0.5);
+  border-radius: 2px;
+  background: rgba(37, 99, 235, 0.02);
+
+  &--cell {
+    border-color: rgba(14, 116, 144, 0.5);
+    background: rgba(14, 116, 144, 0.02);
+  }
+
+  // The section being edited keeps the same frame geometry but reads as a
+  // solid border, so entering edit mode does not move or resize the outline.
+  // It must sit above the edit backdrop (z-index 45): that mask extends a few
+  // pixels past the ink box to cover antialiasing and would otherwise paint
+  // over this border.
+  &--active {
+    z-index: 46;
+    border-style: solid;
+    border-color: rgba(37, 99, 235, 0.95);
+    background: rgba(37, 99, 235, 0.07);
+  }
+}
+
+// Whole-block affordance: one click edits this paragraph, line or table cell.
+.editor__native-block-hint {
+  position: absolute;
+  z-index: 41;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 1px dashed rgba(37, 99, 235, 0.8);
+  border-radius: 3px;
+  background: rgba(37, 99, 235, 0.07);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35) inset;
+
+  &--cell {
+    border-color: rgba(14, 116, 144, 0.85);
+    background: rgba(14, 116, 144, 0.07);
+  }
+
+  &__tag {
+    position: absolute;
+    left: -1px;
+    bottom: calc(100% + 4px);
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #2563eb;
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.25);
+  }
+
+  &--cell &__tag {
+    background: #0e7490;
+  }
+}
+
+// Table outline around the cell the pointer is over.
+.editor__native-table-outline {
+  position: absolute;
+  z-index: 40;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 1px dashed rgba(14, 116, 144, 0.5);
+  border-radius: 2px;
+}
+
 // Masks the glyphs an inline edit replaces with the page's real background
 // (PDFium repaint of the run box), so the field reads as the text itself
 // instead of an overlay on it. Above the hit layer, below the field

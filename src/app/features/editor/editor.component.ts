@@ -71,6 +71,12 @@ import type {
   NativeTextStyle,
   NativeTextTargetView,
 } from './models/native-text-edit.model';
+import {
+  blockAtPoint,
+  buildTextBlocks,
+  type TextBlock,
+  type TextBlockLine,
+} from '../../core/utilities/native-text-block.util';
 import { PdfExportService } from '../../core/services/pdf/pdf-export.service';
 import { ToastService } from '../../core/services/toast.service';
 import { DialogService } from '../../core/services/dialog.service';
@@ -116,13 +122,44 @@ interface MappedNativeTextRun extends PdfNativeTextRun {
   readonly normRect: NormRect;
 }
 
+type MappedNativeTextBlockLine = TextBlockLine<MappedNativeTextRun>;
+type MappedNativeTextBlock = TextBlock<MappedNativeTextRun>;
+type NativeTextAlign = 'left' | 'center' | 'right';
+
+/** One replaced line inside a whole-block selection. */
+interface NativeTextLineTarget {
+  readonly objectIndices: readonly number[];
+  readonly matrix: readonly number[];
+  readonly objectFontSize: number;
+  readonly matrixScale: number;
+  readonly text: string;
+  /** Per-line typography, preserved when only the text is edited. */
+  readonly bold: boolean;
+  readonly italic: boolean;
+  readonly color: NativeTextStyle['color'];
+}
+
 interface ActiveNativeTextEdit {
   readonly run: MappedNativeTextRun;
   readonly pageId: string;
+  /** Set when a whole paragraph/table cell is being edited in one field. */
+  readonly block?: MappedNativeTextBlock | null;
+  /** Every object in the block, hidden inside the backdrop patch. */
+  readonly hiddenObjectIndices?: readonly number[];
+  readonly multiline?: boolean;
+  /** Alignment the field must reproduce (centered/right-aligned sections). */
+  readonly align?: NativeTextAlign;
+  /** Block leading in CSS pixels (null for single-line runs). */
+  readonly lineHeightPx?: number | null;
   readonly left: number;
   readonly top: number;
   readonly width: number;
   readonly height: number;
+  /** Painted extent of block text, so its frame can follow the value. */
+  readonly inkLeft?: number;
+  readonly inkRight?: number;
+  readonly inkTop?: number;
+  readonly inkBottom?: number;
   readonly initialText: string;
   /** Text currently in the field (grows the box beyond `initialText`). */
   readonly text: string;
@@ -184,6 +221,18 @@ interface NativeTextSelection extends NativeTextTargetView {
    * through the matrix scale on every edit.
    */
   readonly effectiveFontSize: number;
+  /**
+   * Per-line handles for a whole-block selection. Style changes are applied to
+   * every line, and block commits reuse the original matrices so untouched
+   * lines keep their exact position.
+   */
+  readonly lineTargets?: readonly NativeTextLineTarget[];
+  /**
+   * Whether the user changed typography in the panel. Until they do, a text
+   * edit keeps each line's own bold/italic/colour instead of flattening the
+   * block to the first line's style.
+   */
+  readonly styleDirty?: boolean;
 }
 
 /** Shared 2D context used to measure fonts without touching page layout. */
@@ -253,6 +302,18 @@ export class EditorComponent implements OnDestroy {
    * typography can be changed right after selecting a sentence.
    */
   readonly nativeSelection = signal<NativeTextSelection | null>(null);
+  /** Whole paragraph/cell highlighted under the pointer in content-edit mode. */
+  readonly hoveredNativeBlock = signal<{
+    readonly pageId: string;
+    readonly block: MappedNativeTextBlock;
+  } | null>(null);
+  /** Blocks are cheap geometry; cache per extracted run array identity. */
+  private readonly nativeBlocksCache = new WeakMap<
+    readonly MappedNativeTextRun[],
+    MappedNativeTextBlock[]
+  >();
+  /** Page keys with an extraction in flight, so scrolling cannot duplicate it. */
+  private readonly nativeRunsLoading = new Set<string>();
   readonly nativeTextTarget = computed<NativeTextTargetView | null>(() => {
     const selection = this.nativeSelection();
     if (!selection || !this.contentEditMode()) {
@@ -266,6 +327,8 @@ export class EditorComponent implements OnDestroy {
   });
   /** Serialises native edits so a blur-commit always lands before a style. */
   private nativeChain: Promise<void> = Promise.resolve();
+  /** Guards the one async extraction a click may need before it edits. */
+  private nativeClickPending = false;
   private readonly nativeRunsByKey = signal<Map<string, MappedNativeTextRun[]>>(
     new Map(),
   );
@@ -1528,6 +1591,24 @@ export class EditorComponent implements OnDestroy {
       });
     });
 
+    // Keep every visible page extracted so the dotted section markers appear
+    // as the user scrolls, without waiting for a click on each page.
+    effect(() => {
+      if (!this.contentEditMode()) {
+        return;
+      }
+      const range = this.renderWindow();
+      const pages = this.pagesStore.pages();
+      untracked(() => {
+        for (let i = range.min; i <= range.max; i++) {
+          const page = pages[i];
+          if (page) {
+            void this.ensureNativeRuns(page);
+          }
+        }
+      });
+    });
+
     // Keep the inline editor glued to its text object when the page geometry
     // changes (zoom, fit mode, rotation or a panel collapse). Only geometry is
     // recomputed — the typed DOM value is left untouched.
@@ -1548,16 +1629,19 @@ export class EditorComponent implements OnDestroy {
           return;
         }
         const strokePx = this.nativeStrokePx(edit.run, page, edit.bold);
+        const preview = {
+          fontFamily: edit.fontFamily,
+          text: edit.text,
+          bold: edit.bold,
+          italic: edit.italic,
+          strokePx,
+          fontIsDocument: edit.fontIsDocument,
+        };
         this.activeNativeEdit.set({
           ...edit,
-          ...this.nativeEditLayout(edit.run, page, {
-            fontFamily: edit.fontFamily,
-            text: edit.text,
-            bold: edit.bold,
-            italic: edit.italic,
-            strokePx,
-            fontIsDocument: edit.fontIsDocument,
-          }),
+          ...(edit.block
+            ? this.nativeBlockEditLayout(edit.block, page, preview)
+            : this.nativeEditLayout(edit.run, page, preview)),
           // The font-family list is kept as-is so a loaded web font survives.
           fontFamily: edit.fontFamily,
           strokePx,
@@ -2494,6 +2578,188 @@ export class EditorComponent implements OnDestroy {
     return this.nativeRunsByKey().get(this.nativeRunKey(page)) ?? [];
   }
 
+  /**
+   * Clickable paragraph / line / table-cell groups for a page.
+   *
+   * Runs are grouped the way a reader sees them: lines share a baseline,
+   * paragraphs keep a normal leading and left edge, and multi-column rows are
+   * treated as table cells. Quarter-turned pages fall back to run editing
+   * because their normalized geometry is rotated.
+   */
+  getNativeBlocksForPage(page: EditorPage): MappedNativeTextBlock[] {
+    if ((page.rotation || 0) % 180 !== 0) {
+      return [];
+    }
+    const runs = this.getNativeRunsForPage(page);
+    if (runs.length === 0) {
+      return [];
+    }
+    const cached = this.nativeBlocksCache.get(runs);
+    if (cached) {
+      return cached;
+    }
+    const blocks = buildTextBlocks(runs, page.sourceIndex);
+    this.nativeBlocksCache.set(runs, blocks);
+    return blocks;
+  }
+
+  /** Drops cached runs/blocks for one source page after objects changed. */
+  private invalidateNativePage(pageIndex: number): void {
+    this.nativeRunsByKey.update((map) => {
+      const next = new Map(map);
+      for (const key of Array.from(next.keys())) {
+        if (key.startsWith(`${pageIndex}:`)) {
+          next.delete(key);
+        }
+      }
+      return next;
+    });
+  }
+
+  private nativeHitNormalized(
+    event: MouseEvent,
+    page: EditorPage,
+  ): { nx: number; ny: number; blocks: MappedNativeTextBlock[] } | null {
+    const layer = event.currentTarget as HTMLElement | null;
+    if (!layer) {
+      return null;
+    }
+    const rect = layer.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+    return {
+      nx: (event.clientX - rect.left) / rect.width,
+      ny: (event.clientY - rect.top) / rect.height,
+      blocks: this.getNativeBlocksForPage(page),
+    };
+  }
+
+  /** Highlights the whole paragraph/cell the pointer is over. */
+  onNativeTextHover(event: PointerEvent, page: EditorPage): void {
+    if (this.textEdit.applying() || this.activeNativeEdit()) {
+      return;
+    }
+    const hit = this.nativeHitNormalized(event, page);
+    if (!hit) {
+      return;
+    }
+    const block = blockAtPoint(hit.blocks, hit.nx, hit.ny);
+    const current = this.hoveredNativeBlock();
+    if (!block) {
+      if (current) {
+        this.hoveredNativeBlock.set(null);
+      }
+      return;
+    }
+    if (current?.block.id === block.id && current.pageId === page.id) {
+      return;
+    }
+    this.hoveredNativeBlock.set({ pageId: page.id, block });
+  }
+
+  onNativeTextLeave(): void {
+    if (this.hoveredNativeBlock()) {
+      this.hoveredNativeBlock.set(null);
+    }
+  }
+
+  /**
+   * Breathing room, in CSS pixels, between a section's ink box and its frame.
+   *
+   * The dashed section markers and the border shown while editing share this
+   * one value, so switching into edit mode never makes the frame jump.
+   */
+  readonly nativeFrameGap = 3;
+
+  /** Ink box of a section expanded by the shared frame gap. */
+  nativeFrameRect(
+    rect: NormRect,
+    page: EditorPage,
+  ): { left: number; top: number; width: number; height: number } {
+    const size = this.getPageDisplaySize(page);
+    const gap = this.nativeFrameGap;
+    return {
+      left: Math.max(0, rect.x * size.width - gap),
+      top: Math.max(0, rect.y * size.height - gap),
+      width: rect.width * size.width + gap * 2,
+      height: rect.height * size.height + gap * 2,
+    };
+  }
+
+  /**
+   * Frame drawn for a section.
+   *
+   * While the value is unchanged the frame stays exactly the dashed section
+   * marker, so entering edit mode adds no gap around the glyphs. Once the text
+   * changes the frame follows the painted text (new lines, wider lines) and
+   * grows only when the edit needs more room than the original ink box.
+   */
+  nativeSectionFrame(
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+  ): { left: number; top: number; width: number; height: number } {
+    const base = this.nativeFrameRect(block.normRect, page);
+    if (!this.isNativeBlockEditing(block)) {
+      return base;
+    }
+    const edit = this.activeNativeEdit();
+    if (!edit || edit.text === edit.initialText) {
+      return base;
+    }
+    const gap = this.nativeFrameGap;
+    const scaleX = edit.scaleX > 0 ? edit.scaleX : 1;
+    const inkLeft = edit.inkLeft ?? edit.left;
+    const inkRight = edit.inkRight ?? edit.left + edit.width * scaleX;
+    const inkTop = edit.inkTop ?? edit.top;
+    const inkBottom = edit.inkBottom ?? edit.top + edit.height;
+    const left = Math.min(base.left, inkLeft - gap);
+    const top = Math.min(base.top, inkTop - gap);
+    const right = Math.max(base.left + base.width, inkRight + gap);
+    const bottom = Math.max(base.top + base.height, inkBottom + gap);
+    return { left, top, width: right - left, height: bottom - top };
+  }
+
+  /** Whether this section is the one currently open in the inline editor. */
+  isNativeBlockEditing(block: MappedNativeTextBlock): boolean {
+    const active = this.activeNativeEdit();
+    if (!active) {
+      return false;
+    }
+    if (active.block) {
+      return active.block.id === block.id;
+    }
+    return block.lines.some((line) => line.runs.includes(active.run));
+  }
+
+  /**
+   * Whether the active field already has a section frame drawn around it.
+   * Rotated pages have no blocks, so their run editor draws its own border.
+   */
+  nativeEditHasMarkedFrame(page: EditorPage): boolean {
+    const active = this.activeNativeEdit();
+    if (!active || active.pageId !== page.id) {
+      return false;
+    }
+    if (active.block) {
+      return true;
+    }
+    return this.getNativeBlocksForPage(page).some((block) =>
+      block.lines.some((line) => line.runs.includes(active.run)),
+    );
+  }
+
+  /** Label shown in the hover tag over the block that a click will edit. */
+  nativeBlockLabel(block: MappedNativeTextBlock): string {
+    if (block.kind === 'cell') {
+      return 'Table cell · click to edit';
+    }
+    if (block.kind === 'paragraph') {
+      return `${block.label} · click to edit`;
+    }
+    return 'Text · click to edit';
+  }
+
   /** Boots the PDFium engine and extracts text objects for nearby pages. */
   async activateNativeTextEdit(): Promise<void> {
     const file = this.files.currentFiles()[0];
@@ -2552,9 +2818,10 @@ export class EditorComponent implements OnDestroy {
       return;
     }
     const key = this.nativeRunKey(page);
-    if (this.nativeRunsByKey().has(key)) {
+    if (this.nativeRunsByKey().has(key) || this.nativeRunsLoading.has(key)) {
       return;
     }
+    this.nativeRunsLoading.add(key);
     try {
       const info = await this.textEdit.extractPage(page.sourceIndex);
       const viewport = await this.viewer.getPageViewport(
@@ -2592,36 +2859,78 @@ export class EditorComponent implements OnDestroy {
           ? error.message
           : 'Could not read the text on this page.';
       this.toasts.error(message);
+    } finally {
+      this.nativeRunsLoading.delete(key);
     }
   }
 
   /** Click handler for the transparent native-edit hit layer. */
   onNativeTextClick(event: MouseEvent, page: EditorPage): void {
-    if (this.textEdit.applying()) {
+    void this.handleNativeTextClick(event, page);
+  }
+
+  /**
+   * Opens the block under the click.
+   *
+   * When a page has not been extracted yet (first click, or the line right
+   * after a commit), the extraction is awaited instead of swallowing the
+   * click, so one click always starts editing.
+   */
+  private async handleNativeTextClick(
+    event: MouseEvent,
+    page: EditorPage,
+  ): Promise<void> {
+    if (this.textEdit.applying() || this.nativeClickPending) {
       return;
     }
-    const layer = event.currentTarget as HTMLElement;
-    const rect = layer.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
+    const hit = this.nativeHitNormalized(event, page);
+    if (!hit) {
       return;
     }
     if (!this.nativeRunsByKey().has(this.nativeRunKey(page))) {
-      void this.ensureNativeRuns(page);
+      this.nativeClickPending = true;
+      try {
+        await this.ensureNativeRuns(page);
+      } finally {
+        this.nativeClickPending = false;
+      }
+      if (this.state.tool() !== 'content-edit') {
+        return;
+      }
+    }
+
+    // One click targets the visual block, not the underlying PDF object. That
+    // is what makes a whole paragraph (or a table cell) editable at once.
+    const blocks = this.getNativeBlocksForPage(page);
+    const block = blockAtPoint(blocks, hit.nx, hit.ny);
+    // Every text section (single line or paragraph) opens in the block editor
+    // so typing wraps inside the section and extra lines can be committed.
+    // Table cells keep the run editor: reflowing a cell would cross the grid.
+    if (block && block.kind !== 'cell') {
+      if (this.hasDuplicateSourcePage(page)) {
+        this.toasts.info(
+          'This page is duplicated. Native text edits would change every copy, so it is read-only until the duplicate is removed.',
+        );
+        return;
+      }
+      this.openNativeBlockEditor(block, page);
       return;
     }
 
-    const nx = (event.clientX - rect.left) / rect.width;
-    const ny = (event.clientY - rect.top) / rect.height;
-    const runs = this.getNativeRunsForPage(page);
+    // Table cell (or a rotated page with no blocks): keep the exact
+    // run-level editor.
     let best: MappedNativeTextRun | null = null;
-    for (const run of runs) {
+    const candidates = block
+      ? block.lines.flatMap((line) => line.runs)
+      : this.getNativeRunsForPage(page);
+    for (const run of candidates) {
       const r = run.normRect;
       const pad = 0.004;
       if (
-        nx >= r.x - pad &&
-        nx <= r.x + r.width + pad &&
-        ny >= r.y - pad &&
-        ny <= r.y + r.height + pad
+        hit.nx >= r.x - pad &&
+        hit.nx <= r.x + r.width + pad &&
+        hit.ny >= r.y - pad &&
+        hit.ny <= r.y + r.height + pad
       ) {
         if (
           !best ||
@@ -2643,6 +2952,7 @@ export class EditorComponent implements OnDestroy {
       );
       return;
     }
+    this.hoveredNativeBlock.set(null);
     this.openNativeEditor(best, page);
   }
 
@@ -2807,7 +3117,16 @@ export class EditorComponent implements OnDestroy {
     rect: { left: number; top: number; width: number; height: number };
     region: { x: number; y: number; width: number; height: number };
   } {
-    const box = run.normRect;
+    return this.nativeBackdropForRect(run.normRect, size);
+  }
+
+  private nativeBackdropForRect(
+    box: { x: number; y: number; width: number; height: number },
+    size: { width: number; height: number },
+  ): {
+    rect: { left: number; top: number; width: number; height: number };
+    region: { x: number; y: number; width: number; height: number };
+  } {
     // A few pixels of padding cover antialiasing and italic overhang.
     const pad = 3;
     const left = Math.max(0, box.x * size.width - pad);
@@ -2831,6 +3150,690 @@ export class EditorComponent implements OnDestroy {
         height: size.height > 0 ? height / size.height : 0,
       },
     };
+  }
+
+  /** Widest line of an edited block, in CSS pixels. */
+  private measureNativeTextWidth(
+    text: string,
+    fontFamily: string,
+    fontSizePx: number,
+    bold: boolean,
+    italic: boolean,
+  ): number {
+    if (!text) {
+      return 0;
+    }
+    const ctx = nativeMeasureContext();
+    if (!ctx) {
+      return text.length * fontSizePx * 0.6;
+    }
+    try {
+      ctx.font =
+        `${italic ? 'italic ' : ''}${bold ? '700' : '400'} ` +
+        `${fontSizePx}px ${fontFamily}`;
+      // The field disables kerning to match PDF glyph advances, so the wrapper
+      // must measure without kerning too or it predicts a narrower line than
+      // the textarea paints.
+      ctx.fontKerning = 'none';
+      return ctx.measureText(text).width;
+    } catch {
+      return text.length * fontSizePx * 0.6;
+    }
+  }
+
+  /**
+   * Ink ascent/descent of one rendered line, in CSS pixels.
+   *
+   * Unlike the font box, this is the extent of the glyphs that are actually
+   * painted, which is what the section frame must hug. Empty lines have no ink.
+   */
+  private nativeLineInk(
+    text: string,
+    fontFamily: string,
+    fontSizePx: number,
+    bold: boolean,
+    italic: boolean,
+  ): { ascent: number; descent: number } {
+    if (!text) {
+      return { ascent: 0, descent: 0 };
+    }
+    const ctx = nativeMeasureContext();
+    if (!ctx) {
+      return { ascent: fontSizePx * 0.8, descent: 0 };
+    }
+    try {
+      ctx.font =
+        `${italic ? 'italic ' : ''}${bold ? '700' : '400'} ` +
+        `${fontSizePx}px ${fontFamily}`;
+      ctx.fontKerning = 'none';
+      const measured = ctx.measureText(text);
+      const ascent =
+        Number.isFinite(measured.actualBoundingBoxAscent) &&
+        measured.actualBoundingBoxAscent > 0
+          ? measured.actualBoundingBoxAscent
+          : fontSizePx * 0.8;
+      const descent =
+        Number.isFinite(measured.actualBoundingBoxDescent) &&
+        measured.actualBoundingBoxDescent > 0
+          ? measured.actualBoundingBoxDescent
+          : 0;
+      return { ascent, descent };
+    } catch {
+      return { ascent: fontSizePx * 0.8, descent: 0 };
+    }
+  }
+
+  /**
+   * Right edge (normalized) that added text may flow to.
+   *
+   * A short paragraph should not wrap at its own footprint: the page's text
+   * frame (and the column it belongs to) sets the width. A right-hand column
+   * caps the flow so two-column pages do not run across the gutter.
+   */
+  private nativeSectionFlowRight(
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+  ): number {
+    const ownRight = block.normRect.x + block.normRect.width;
+    const blockTop = block.normRect.y;
+    const blockBottom = blockTop + block.normRect.height;
+    const blocks = this.getNativeBlocksForPage(page);
+    let pageRight = ownRight;
+    let textLeft = block.normRect.x;
+    let rightColumnStart = Number.POSITIVE_INFINITY;
+    // Only narrow sections can have a right-hand column beside them; a
+    // full-width paragraph already defines the page's text edge.
+    const detectColumns = block.normRect.width < 0.7;
+    const columnThreshold =
+      block.normRect.x + Math.max(0.08, block.normRect.width * 0.8);
+    const nearbyHeight = Math.max(0.05, block.normRect.height * 1.5);
+    for (const other of blocks) {
+      const right = other.normRect.x + other.normRect.width;
+      // Table cells do not form a body column, but their right edge still
+      // shows where the page's text area ends.
+      pageRight = Math.max(pageRight, right);
+      if (other.kind === 'cell') {
+        continue;
+      }
+      textLeft = Math.min(textLeft, other.normRect.x);
+      // A block on a different part of the page (header, footer, caption
+      // below) is not a second column; only nearby text can set a gutter.
+      const gap = Math.max(
+        0,
+        other.normRect.y - blockBottom,
+        blockTop - (other.normRect.y + other.normRect.height),
+      );
+      if (
+        detectColumns &&
+        gap <= nearbyHeight &&
+        other.normRect.x > columnThreshold
+      ) {
+        rightColumnStart = Math.min(rightColumnStart, other.normRect.x);
+      }
+    }
+    // No block proves where the text area ends to the right: mirror the page's
+    // left text margin so the section can grow to the page's text width.
+    pageRight = Math.max(pageRight, 1 - textLeft);
+    if (Number.isFinite(rightColumnStart)) {
+      const gutter = 0.015;
+      return Math.min(
+        pageRight,
+        Math.max(ownRight, rightColumnStart - gutter),
+      );
+    }
+    return pageRight;
+  }
+
+  /** Run that carries most of a line's characters (its visible style). */
+  private nativeDominantRun(line: MappedNativeTextBlockLine): MappedNativeTextRun {
+    let best = line.runs[0];
+    let bestLength = -1;
+    for (const run of line.runs) {
+      const length = run.text.trim().length;
+      if (length > bestLength) {
+        bestLength = length;
+        best = run;
+      }
+    }
+    return best;
+  }
+
+  /** Horizontal bounds of the text column the block sits in (normalized). */
+  private nativeBlockColumn(
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+  ): { left: number; right: number } {
+    const ownLeft = block.normRect.x;
+    const ownRight = ownLeft + block.normRect.width;
+    let left = ownLeft;
+    for (const other of this.getNativeBlocksForPage(page)) {
+      if (other.kind === 'cell') {
+        continue;
+      }
+      const otherLeft = other.normRect.x;
+      const otherRight = otherLeft + other.normRect.width;
+      if (otherLeft < ownRight && otherRight > ownLeft) {
+        left = Math.min(left, otherLeft);
+      }
+    }
+    return { left, right: this.nativeSectionFlowRight(block, page) };
+  }
+
+  /**
+   * Detects left/center/right alignment from the section's own line edges and
+   * the text frame around it.
+   *
+   * Line edges are decisive: a paragraph whose lines share a left edge stays
+   * left-aligned even when its page margins happen to be symmetric. Centering
+   * is only reported with real evidence — ragged lines around a shared center,
+   * or a short line centred inside a wider block.
+   */
+  private nativeBlockAlignment(
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+  ): NativeTextAlign {
+    const size = this.getPageDisplaySize(page);
+    const lines = block.lines;
+    const lineHeightPx = this.nativeBlockLineHeightPx(block, page);
+    const lineHeightNorm = Math.max(
+      0.005,
+      lineHeightPx / Math.max(1, size.height),
+    );
+    const tolerance = Math.max(0.008, lineHeightNorm * 0.7);
+    // Line edges must agree far more tightly than "half a line": centred lines
+    // of similar length can shift their left edge by several points while the
+    // block is still centred, and that must not read as a left-aligned edge.
+    const edgeTolerance = Math.max(
+      0.0015,
+      Math.min(
+        0.005,
+        ((lineHeightPx / 1.2) / Math.max(1, size.width)) * 0.15,
+      ),
+    );
+    const lefts = lines.map((line) => line.normRect.x);
+    const rights = lines.map(
+      (line) => line.normRect.x + line.normRect.width,
+    );
+    const centers = lines.map(
+      (line) => line.normRect.x + line.normRect.width / 2,
+    );
+    const spread = (values: readonly number[]): number =>
+      Math.max(...values) - Math.min(...values);
+    const boxLeft = Math.min(...lefts);
+    const boxRight = Math.max(...rights);
+    const boxCenter = (boxLeft + boxRight) / 2;
+    const leftSpread = spread(lefts);
+    const rightSpread = spread(rights);
+    const centerSpread = spread(centers);
+
+    // The section's own line edges decide first. Left-aligned paragraphs often
+    // have ragged right edges, and their symmetric page margins must not read
+    // as centering. Lines of equal width (both edges agree) are ambiguous: a
+    // centred title with two same-length lines looks identical to a short left
+    // block, so that case falls through to the page-context checks below.
+    if (lines.length > 1) {
+      const equalLeft = leftSpread <= edgeTolerance;
+      const equalRight = rightSpread <= edgeTolerance;
+      if (equalLeft && !equalRight) {
+        return 'left';
+      }
+      if (equalRight && !equalLeft) {
+        return 'right';
+      }
+      if (!equalLeft && !equalRight && centerSpread <= tolerance) {
+        return 'center';
+      }
+    }
+
+    const blocks = this.getNativeBlocksForPage(page).filter(
+      (other) => other.id !== block.id && other.kind !== 'cell',
+    );
+
+    // The page's text frame. When no block defines the right edge, mirroring
+    // the left text margin gives the width the page's own text area implies.
+    let frameLeft = boxLeft;
+    let frameRight = boxRight;
+    for (const other of blocks) {
+      frameLeft = Math.min(frameLeft, other.normRect.x);
+      frameRight = Math.max(
+        frameRight,
+        other.normRect.x + other.normRect.width,
+      );
+    }
+    frameRight = Math.max(frameRight, 1 - frameLeft);
+    const frameWidth = Math.max(0.0001, frameRight - frameLeft);
+    const paddingFloor = Math.max(tolerance * 2, lineHeightNorm * 1.5);
+
+    // A short line centred inside a clearly wider, also-centred block is a
+    // title or caption: the strongest centering signal for a single line.
+    for (const other of blocks) {
+      const otherLeft = other.normRect.x;
+      const otherRight = otherLeft + other.normRect.width;
+      const otherCenter = (otherLeft + otherRight) / 2;
+      if (
+        Math.abs(otherCenter - boxCenter) <= tolerance * 2 &&
+        boxLeft - otherLeft >= paddingFloor &&
+        otherRight - boxRight >= paddingFloor &&
+        otherRight - otherLeft > boxRight - boxLeft
+      ) {
+        return 'center';
+      }
+    }
+
+    // Body text that shares the page's left text edge stays left-aligned.
+    if (
+      blocks.some(
+        (other) => Math.abs(other.normRect.x - boxLeft) <= edgeTolerance,
+      )
+    ) {
+      return 'left';
+    }
+
+    const leftMargin = boxLeft - frameLeft;
+    const rightMargin = frameRight - boxRight;
+    if (leftMargin <= paddingFloor) {
+      return 'left';
+    }
+    if (Math.abs(boxRight - frameRight) <= edgeTolerance * 2) {
+      return 'right';
+    }
+    // A lone short line with even margins inside the text frame is a centred
+    // title; every other ambiguous case stays left-aligned.
+    if (
+      leftMargin > paddingFloor &&
+      rightMargin > paddingFloor &&
+      Math.abs(leftMargin - rightMargin) <=
+        Math.max(tolerance * 2, lineHeightNorm) &&
+      boxRight - boxLeft < frameWidth * 0.85
+    ) {
+      return 'center';
+    }
+    return 'left';
+  }
+
+  /** Leading between two consecutive block lines, in CSS pixels. */
+  private nativeBlockLineHeightPx(block: MappedNativeTextBlock, page: EditorPage): number {
+    // Matrix translations are in page points, so one display scale converts
+    // the exact baseline delta; bbox tops wobble with ascenders/descenders.
+    const size = this.getPageDisplaySize(page);
+    return Math.max(4, this.nativeBlockLineHeightPt(block) * size.scale);
+  }
+
+  /** Leading between block lines in PDF points (matrix space). */
+  private nativeBlockLineHeightPt(block: MappedNativeTextBlock): number {
+    const baselines = block.lines.map((line) => line.runs[0].matrix[5] ?? 0);
+    const deltas: number[] = [];
+    for (let i = 1; i < baselines.length; i++) {
+      const delta = baselines[i - 1] - baselines[i];
+      if (delta > 0) {
+        deltas.push(delta);
+      }
+    }
+    if (deltas.length === 0) {
+      const run = block.lines[0].runs[0];
+      const scale = run.matrixScale > 0 ? run.matrixScale : 1;
+      return Math.max(1, run.fontSize * scale * 1.2);
+    }
+    deltas.sort((a, b) => a - b);
+    return deltas[Math.floor(deltas.length / 2)];
+  }
+
+  /**
+   * Lays out the whole-block field on the paragraph's first baseline and real
+   * leading, so every line sits where the page paints it.
+   */
+  private nativeBlockEditLayout(
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+    preview: {
+      readonly fontFamily: string;
+      readonly text: string;
+      readonly bold: boolean;
+      readonly italic: boolean;
+      readonly strokePx: number;
+      readonly fontIsDocument: boolean;
+    },
+  ): {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    fontSizePx: number;
+    scaleX: number;
+    lineHeightPx: number;
+    align: NativeTextAlign;
+    /** Painted extent of the current text, in page-frame CSS pixels. */
+    inkLeft: number;
+    inkRight: number;
+    inkTop: number;
+    inkBottom: number;
+    backdropRect: {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+    };
+    backdropRegion: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+  } {
+    const size = this.getPageDisplaySize(page);
+    const firstLine = block.lines[0];
+    const styleRun = this.nativeDominantRun(firstLine);
+    const verticalScale =
+      Math.hypot(styleRun.matrix[2] ?? 0, styleRun.matrix[3] ?? 0) ||
+      (styleRun.matrixScale > 0 ? styleRun.matrixScale : 1);
+    const nominalFontSizePx = Math.max(
+      1,
+      Math.min(400, styleRun.fontSize * verticalScale * size.scale),
+    );
+    const metrics = this.nativeFontMetrics({
+      fontFamily: preview.fontFamily,
+      fontSizePx: nominalFontSizePx,
+      text: firstLine.text,
+      referenceText: firstLine.text,
+      bold: preview.bold,
+      italic: preview.italic,
+      strokePx: preview.strokePx,
+      targetInkHeight: preview.fontIsDocument
+        ? undefined
+        : firstLine.normRect.height * size.height,
+    });
+
+    const blockTops = block.lines.map((line) => line.normRect.y * size.height);
+    const firstInkTop = blockTops[0];
+    const firstBaseline = firstInkTop + metrics.inkAscent;
+    let lineHeightPx = this.nativeBlockLineHeightPx(block, page);
+    lineHeightPx = Math.max(metrics.lineHeight * 0.9, lineHeightPx);
+    // `baselineOffset` describes a `line-height: 1` box. Shifting to the
+    // block's real leading adds half of the extra space above the first line.
+    const top = Math.max(
+      0,
+      firstBaseline -
+        (metrics.baselineOffset + (lineHeightPx - metrics.fontSizePx) / 2),
+    );
+
+    // Match the PDF's horizontal text scale. A substitute face (before the
+    // embedded program loads, or a non-embedded base font) also needs its ink
+    // fitted to the first line, or selections drift away from the page glyphs.
+    const horizontalScale =
+      Math.hypot(styleRun.matrix[0] ?? 0, styleRun.matrix[1] ?? 0) ||
+      verticalScale;
+    const pageInkLeft = firstLine.normRect.x * size.width;
+    const pageInkWidth = firstLine.normRect.width * size.width;
+    const tzScale = verticalScale > 0 ? horizontalScale / verticalScale : 1;
+    const leadingWhitespace = /^\s/.test(firstLine.text);
+    const measuredInk = metrics.inkWidth + Math.max(0, metrics.inkLeft);
+    let scaleX = tzScale;
+    if (!preview.fontIsDocument && measuredInk > 0.5 && pageInkWidth > 0) {
+      const fit = pageInkWidth / measuredInk;
+      if (fit >= 0.5 && fit <= 2) {
+        scaleX = fit;
+      }
+    }
+    // Start left-aligned text on the run's real origin. Centered and
+    // right-aligned sections need the whole column box so CSS can align them.
+    const originLeft = Math.max(
+      0,
+      pageInkLeft - (leadingWhitespace ? 0 : metrics.inkLeft * scaleX),
+    );
+    // A short section may use the whole column it sits in, not just its own
+    // half-width. The flow edge also stops at a right-hand column's gutter.
+    const align = this.nativeBlockAlignment(block, page);
+    const column = this.nativeBlockColumn(block, page);
+    let flowLeft = column.left * size.width;
+    let flowRight = column.right * size.width;
+    let left = originLeft;
+    let boxRight = flowRight;
+    if (align === 'center') {
+      const centers = block.lines
+        .map(
+          (line) =>
+            (line.normRect.x + line.normRect.width / 2) * size.width,
+        )
+        .sort((a, b) => a - b);
+      const centerPx = centers[Math.floor(centers.length / 2)];
+      // Page-centered content gets the page's full text box, not just its own
+      // narrow footprint, so added text can use the whole line.
+      if (Math.abs(centerPx / Math.max(1, size.width) - 0.5) <= 0.08) {
+        let globalLeft = block.normRect.x;
+        let globalRight = block.normRect.x + block.normRect.width;
+        for (const other of this.getNativeBlocksForPage(page)) {
+          globalLeft = Math.min(globalLeft, other.normRect.x);
+          globalRight = Math.max(
+            globalRight,
+            other.normRect.x + other.normRect.width,
+          );
+        }
+        flowLeft = globalLeft * size.width;
+        flowRight = globalRight * size.width;
+      }
+      const half = Math.max(
+        16,
+        Math.min(centerPx - flowLeft, flowRight - centerPx),
+      );
+      left = centerPx - half;
+      boxRight = centerPx + half;
+    } else if (align === 'right') {
+      const rights = block.lines
+        .map(
+          (line) =>
+            (line.normRect.x + line.normRect.width) * size.width,
+        )
+        .sort((a, b) => a - b);
+      // Right-aligned text grows to the left, so the field reaches the page's
+      // left text edge instead of wrapping at the section's own footprint.
+      let frameLeft = block.normRect.x;
+      for (const other of this.getNativeBlocksForPage(page)) {
+        frameLeft = Math.min(frameLeft, other.normRect.x);
+      }
+      left = Math.min(flowLeft, Math.max(0, frameLeft * size.width));
+      boxRight = rights[Math.floor(rights.length / 2)];
+    }
+    left = Math.max(0, left);
+    // Widths inside the field are unscaled font pixels; the host is scaled by
+    // `scaleX` onto the page.
+    const contentWidth = Math.max(
+      32,
+      (Math.max(left + 1, boxRight) - left) / Math.max(0.1, scaleX) + 2,
+    );
+    const wrappedLines = this.wrapNativeBlockText(preview.text, contentWidth, {
+      fontFamily: preview.fontFamily,
+      fontSizePx: metrics.fontSizePx,
+      bold: preview.bold,
+      italic: preview.italic,
+    });
+    // Widest painted line: the section frame hugs the text and only grows when
+    // the edit actually needs more room than the original ink box.
+    const widestLinePx = wrappedLines.reduce(
+      (widest, line) =>
+        Math.max(
+          widest,
+          this.measureNativeTextWidth(
+            line,
+            preview.fontFamily,
+            metrics.fontSizePx,
+            preview.bold,
+            preview.italic,
+          ),
+        ),
+      0,
+    );
+    const inkOffset =
+      align === 'center'
+        ? Math.max(0, (contentWidth - widestLinePx) / 2)
+        : align === 'right'
+          ? Math.max(0, contentWidth - widestLinePx)
+          : 0;
+    const inkLeft = left + inkOffset * scaleX;
+    const inkRight = inkLeft + widestLinePx * scaleX;
+    // Vertical ink of the painted lines, so the frame gap around the text is
+    // the same while editing as the dashed section marker (no line-box or
+    // field padding leaks into the border).
+    const firstLineInk = this.nativeLineInk(
+      wrappedLines[0] ?? '',
+      preview.fontFamily,
+      metrics.fontSizePx,
+      preview.bold,
+      preview.italic,
+    );
+    const lastLineInk = this.nativeLineInk(
+      wrappedLines[wrappedLines.length - 1] ?? '',
+      preview.fontFamily,
+      metrics.fontSizePx,
+      preview.bold,
+      preview.italic,
+    );
+    const lastBaseline =
+      firstBaseline + (wrappedLines.length - 1) * lineHeightPx;
+    const inkTop = Math.min(
+      firstInkTop,
+      firstBaseline - Math.max(metrics.inkAscent, firstLineInk.ascent),
+    );
+    const inkBottom = lastBaseline + lastLineInk.descent;
+    const lineCount = Math.max(wrappedLines.length, block.lines.length, 1);
+    const blockBottom = Math.max(
+      ...block.lines.map(
+        (line) => (line.normRect.y + line.normRect.height) * size.height,
+      ),
+    );
+    const height = Math.max(
+      lineCount * lineHeightPx,
+      blockBottom - firstInkTop,
+      metrics.lineHeight,
+    );
+
+    const backdrop = this.nativeBackdropForRect(block.normRect, size);
+    return {
+      left,
+      top,
+      width: Math.max(32, contentWidth),
+      height: Math.max(metrics.lineHeight, height) + 4,
+      fontSizePx: metrics.fontSizePx,
+      scaleX,
+      lineHeightPx,
+      align,
+      inkLeft,
+      inkRight,
+      inkTop,
+      inkBottom,
+      backdropRect: backdrop.rect,
+      backdropRegion: backdrop.region,
+    };
+  }
+
+  /** Opens the whole paragraph / table cell in one inline field. */
+  private openNativeBlockEditor(
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+  ): void {
+    const firstLine = block.lines[0];
+    const styleRun = this.nativeDominantRun(firstLine);
+    const originRun = firstLine.runs[0];
+    const scale = styleRun.matrixScale > 0 ? styleRun.matrixScale : 1;
+    const effectiveFontSize = Math.round(styleRun.fontSize * scale * 100) / 100;
+    const faceBold = styleRun.fontBold;
+    const faceItalic = styleRun.fontItalic;
+    const fallbackFamily = this.nativeFontFamily(styleRun.fontFamily, styleRun.fontName);
+    const strokePx = this.nativeStrokePx(styleRun, page, faceBold);
+    const initialText = block.lines.map((line) => line.text).join('\n');
+    const hiddenObjectIndices = Array.from(
+      new Set(block.lines.flatMap((line) => line.runs.flatMap((run) => run.objectIndices))),
+    );
+
+    this.hoveredNativeBlock.set(null);
+    this.nativeSelection.set({
+      pageId: page.id,
+      pageIndex: block.pageIndex,
+      objectIndices: hiddenObjectIndices,
+      baseMatrix: originRun.matrix,
+      matrixScale: scale,
+      objectFontSize: styleRun.fontSize,
+      effectiveFontSize,
+      text: initialText,
+      fontName: styleRun.fontName,
+      style: {
+        fontFamily: 'original',
+        fontSize: effectiveFontSize,
+        bold: faceBold,
+        italic: faceItalic,
+        underline: false,
+        strikethrough: false,
+        color: styleRun.color,
+      },
+      lineTargets: block.lines.map((line) => {
+        const lineStyle = this.nativeDominantRun(line);
+        return {
+          objectIndices: line.runs.flatMap((item) => item.objectIndices),
+          matrix: line.runs[0].matrix,
+          objectFontSize: lineStyle.fontSize,
+          matrixScale:
+            lineStyle.matrixScale > 0 ? lineStyle.matrixScale : 1,
+          text: line.text,
+          bold: lineStyle.fontBold,
+          italic: lineStyle.fontItalic,
+          color: lineStyle.color,
+        };
+      }),
+      styleDirty: false,
+    });
+    this.activeNativeEdit.set({
+      run: styleRun,
+      block,
+      hiddenObjectIndices,
+      multiline: true,
+      pageId: page.id,
+      ...this.nativeBlockEditLayout(block, page, {
+        fontFamily: fallbackFamily,
+        text: initialText,
+        bold: faceBold,
+        italic: faceItalic,
+        strokePx,
+        fontIsDocument: false,
+      }),
+      initialText,
+      text: initialText,
+      fontFamily: fallbackFamily,
+      fontIsDocument: false,
+      backdrop: this.sampleRunBackdrop(originRun, page),
+      color: `rgba(${styleRun.color.r}, ${styleRun.color.g}, ${styleRun.color.b}, ${
+        styleRun.color.a / 255
+      })`,
+      bold: faceBold,
+      italic: faceItalic,
+      strokePx,
+    });
+
+    void this.textEdit.ensureFontFace(styleRun.fontName, styleRun.text).then((handle) => {
+      const active = this.activeNativeEdit();
+      if (!handle || !active || active.block?.id !== block.id) {
+        return;
+      }
+      const current = this.pagesStore.pages().find((p) => p.id === page.id) ?? page;
+      const family = `${handle.css}, ${fallbackFamily}`;
+      const previewBold = faceBold || handle.bold;
+      const previewItalic = faceItalic || handle.italic;
+      const nextStrokePx = this.nativeStrokePx(styleRun, current, previewBold);
+      this.activeNativeEdit.set({
+        ...active,
+        ...this.nativeBlockEditLayout(block, current, {
+          fontFamily: family,
+          text: active.text,
+          bold: previewBold,
+          italic: previewItalic,
+          strokePx: nextStrokePx,
+          fontIsDocument: true,
+        }),
+        fontFamily: family,
+        fontIsDocument: true,
+        bold: previewBold,
+        italic: previewItalic,
+        strokePx: nextStrokePx,
+      });
+    });
   }
 
   /**
@@ -3190,6 +4193,7 @@ export class EditorComponent implements OnDestroy {
 
   onNativeEditCancel(): void {
     this.activeNativeEdit.set(null);
+    this.hoveredNativeBlock.set(null);
   }
 
   /**
@@ -3207,17 +4211,20 @@ export class EditorComponent implements OnDestroy {
     if (!page) {
       return;
     }
+    const preview = {
+      fontFamily: edit.fontFamily,
+      text,
+      bold: edit.bold,
+      italic: edit.italic,
+      strokePx: edit.strokePx,
+      fontIsDocument: edit.fontIsDocument,
+    };
     this.activeNativeEdit.set({
       ...edit,
       text,
-      ...this.nativeEditLayout(edit.run, page, {
-        fontFamily: edit.fontFamily,
-        text,
-        bold: edit.bold,
-        italic: edit.italic,
-        strokePx: edit.strokePx,
-        fontIsDocument: edit.fontIsDocument,
-      }),
+      ...(edit.block
+        ? this.nativeBlockEditLayout(edit.block, page, preview)
+        : this.nativeEditLayout(edit.run, page, preview)),
     });
   }
 
@@ -3254,6 +4261,331 @@ export class EditorComponent implements OnDestroy {
     };
   }
 
+  /** Builds one line's edit inside a whole-block selection. */
+  private nativeLineEdit(
+    target: NativeTextLineTarget,
+    text: string,
+    style: NativeTextStyle,
+  ): PdfNativeTextEdit {
+    const scale = target.matrixScale > 0 ? target.matrixScale : 1;
+    const effectiveSize = target.objectFontSize * scale;
+    const sizeUnchanged = Math.abs(style.fontSize - effectiveSize) < 0.005;
+    const objectFontSize = sizeUnchanged
+      ? target.objectFontSize
+      : style.fontSize > 0
+        ? style.fontSize / scale
+        : target.objectFontSize;
+    return {
+      objectIndices: target.objectIndices,
+      text,
+      originalText: target.text,
+      fontSize: objectFontSize,
+      fontFamily: style.fontFamily,
+      bold: style.bold,
+      italic: style.italic,
+      underline: style.underline,
+      strikethrough: style.strikethrough,
+      fillColor: style.color,
+      matrix: target.matrix,
+    };
+  }
+
+  /** One edit per line for block-wide style changes; one edit otherwise. */
+  private nativeEditsFor(
+    selection: NativeTextSelection,
+    text: string,
+    style: NativeTextStyle,
+  ): PdfNativeTextEdit[] {
+    const targets = selection.lineTargets;
+    if (!targets || targets.length === 0) {
+      return [this.nativeEditFor(selection, text, style)];
+    }
+    const lines = text.replace(/\r\n?/g, '\n').split('\n');
+    return targets.map((target, index) =>
+      this.nativeLineEdit(
+        target,
+        index < lines.length ? lines[index] : target.text,
+        style,
+      ),
+    );
+  }
+
+  /** Greedy wrap so a longer paragraph keeps the block's original width. */
+  private wrapNativeBlockText(
+    text: string,
+    maxWidthPx: number,
+    preview: {
+      readonly fontFamily: string;
+      readonly fontSizePx: number;
+      readonly bold: boolean;
+      readonly italic: boolean;
+    },
+  ): string[] {
+    const measure = (value: string): number =>
+      this.measureNativeTextWidth(
+        value,
+        preview.fontFamily,
+        preview.fontSizePx,
+        preview.bold,
+        preview.italic,
+      );
+    const output: string[] = [];
+    const limit = Math.max(16, maxWidthPx);
+
+    // Break one over-long token at the widest prefix that still fits.
+    const breakToken = (token: string): string => {
+      let rest = token;
+      while (rest && measure(rest) > limit) {
+        const chars = Array.from(rest);
+        if (chars.length <= 1) {
+          break;
+        }
+        let low = 1;
+        let high = chars.length;
+        while (low < high) {
+          const mid = Math.ceil((low + high) / 2);
+          if (measure(chars.slice(0, mid).join('')) <= limit) {
+            low = mid;
+          } else {
+            high = mid - 1;
+          }
+        }
+        output.push(chars.slice(0, low).join(''));
+        rest = chars.slice(low).join('');
+      }
+      return rest;
+    };
+
+    for (const logical of text.replace(/\r\n?/g, '\n').split('\n')) {
+      if (!logical) {
+        output.push('');
+        continue;
+      }
+      if (measure(logical) <= limit) {
+        output.push(logical);
+        continue;
+      }
+      const parts = logical.split(/(\s+)/).filter((part) => part.length > 0);
+      let current = '';
+      let sawWord = false;
+      const flush = (): void => {
+        if (current) {
+          output.push(current.trimEnd());
+          current = '';
+        }
+      };
+      for (const part of parts) {
+        if (/^\s+$/.test(part)) {
+          if (current) {
+            current += part;
+          }
+          continue;
+        }
+        sawWord = true;
+        if (measure(part) > limit) {
+          flush();
+          current = breakToken(part);
+          continue;
+        }
+        const candidate = current + part;
+        if (current && measure(candidate.trimEnd()) > limit) {
+          flush();
+          current = part;
+        } else {
+          current = candidate;
+        }
+      }
+      flush();
+      if (!sawWord) {
+        output.push('');
+      }
+    }
+    return output.length > 0 ? output : [''];
+  }
+
+  /**
+   * Turns edited block text into one edit per original line plus insert-only
+   * edits for any lines the paragraph gained.
+   */
+  private nativeBlockEdits(
+    block: MappedNativeTextBlock,
+    text: string,
+    style: NativeTextStyle,
+    options: {
+      readonly wrapWidthPx?: number;
+      readonly preview?: {
+        readonly fontFamily: string;
+        readonly fontSizePx: number;
+        readonly bold: boolean;
+        readonly italic: boolean;
+      };
+      readonly preserveLineStyle: boolean;
+      readonly align: NativeTextAlign;
+      readonly pageScale: number;
+      readonly scaleX: number;
+    },
+  ): PdfNativeTextEdit[] {
+    let editedLines = text.replace(/\r\n?/g, '\n').split('\n');
+    const preview = options.preview;
+    // Every text section reflows to the field's column width, so the committed
+    // PDF uses the same line breaks the user saw while typing.
+    if (block.kind !== 'cell' && options.wrapWidthPx && preview) {
+      editedLines = this.wrapNativeBlockText(
+        text,
+        options.wrapWidthPx,
+        preview,
+      );
+    }
+    const originals = block.lines;
+    const firstLine = originals[0];
+    const firstOrigin = firstLine.runs[0];
+    const firstStyle = this.nativeDominantRun(firstLine);
+    const lastOrigin = originals[originals.length - 1].runs[0];
+    const anchorObjectIndex = firstStyle.objectIndices[0];
+    const lineHeightPt = this.nativeBlockLineHeightPt(block);
+    const firstScale = firstStyle.matrixScale > 0 ? firstStyle.matrixScale : 1;
+    const firstEffective = firstStyle.fontSize * firstScale;
+    const fontSizeForUntouched = Math.abs(style.fontSize - firstEffective) < 0.005;
+    const total = Math.max(editedLines.length, originals.length);
+
+    // Alignment anchors in PDF points, from the original visual lines.
+    const lineBounds = originals.map((line) => {
+      let minX = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      for (const run of line.runs) {
+        minX = Math.min(minX, run.bbox.x);
+        maxX = Math.max(maxX, run.bbox.x + run.bbox.width);
+      }
+      return { minX, maxX, center: (minX + maxX) / 2 };
+    });
+    const median = (values: number[]): number =>
+      values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
+    const centerPt = median(lineBounds.map((bounds) => bounds.center));
+    const rightPt = median(lineBounds.map((bounds) => bounds.maxX));
+    const leftX = firstOrigin.matrix[4] ?? 0;
+
+    const alignedX = (
+      value: string,
+      lineStyle: MappedNativeTextRun,
+    ): number => {
+      if (options.align === 'left' || !preview || !value) {
+        return leftX;
+      }
+      const lineScale =
+        lineStyle.matrixScale > 0 ? lineStyle.matrixScale : 1;
+      const lineEffective = lineStyle.fontSize * lineScale;
+      const fontPx =
+        firstEffective > 0
+          ? preview.fontSizePx * (lineEffective / firstEffective)
+          : preview.fontSizePx;
+      const widthHost = this.measureNativeTextWidth(
+        value,
+        preview.fontFamily,
+        fontPx,
+        options.preserveLineStyle ? lineStyle.fontBold : preview.bold,
+        options.preserveLineStyle ? lineStyle.fontItalic : preview.italic,
+      );
+      const pageScale = options.pageScale > 0 ? options.pageScale : 1;
+      const widthPt = (widthHost * options.scaleX) / pageScale;
+      return options.align === 'center'
+        ? centerPt - widthPt / 2
+        : rightPt - widthPt;
+    };
+
+    const edits: PdfNativeTextEdit[] = [];
+    for (let index = 0; index < total; index++) {
+      const original = originals[index];
+      const lineText = index < editedLines.length ? editedLines[index] : '';
+      if (original) {
+        const origin = original.runs[0];
+        const lineStyle = this.nativeDominantRun(original);
+        const scale =
+          lineStyle.matrixScale > 0 ? lineStyle.matrixScale : 1;
+        const lineEffective = lineStyle.fontSize * scale;
+        const sizeUnchanged = Math.abs(style.fontSize - lineEffective) < 0.005;
+        const objectFontSize = options.preserveLineStyle
+          ? lineStyle.fontSize
+          : sizeUnchanged
+            ? lineStyle.fontSize
+            : style.fontSize > 0
+              ? style.fontSize / scale
+              : lineStyle.fontSize;
+        const x =
+          options.align === 'left'
+            ? (origin.matrix[4] ?? leftX)
+            : alignedX(lineText, lineStyle);
+        const matrix: readonly number[] = [
+          origin.matrix[0] ?? 1,
+          origin.matrix[1] ?? 0,
+          origin.matrix[2] ?? 0,
+          origin.matrix[3] ?? 1,
+          x,
+          origin.matrix[5] ?? 0,
+        ];
+        edits.push({
+          objectIndices: original.runs.flatMap((item) => item.objectIndices),
+          text: lineText,
+          originalText: original.text,
+          fontSize: objectFontSize,
+          fontFamily: options.preserveLineStyle ? 'original' : style.fontFamily,
+          bold: options.preserveLineStyle ? lineStyle.fontBold : style.bold,
+          italic: options.preserveLineStyle
+            ? lineStyle.fontItalic
+            : style.italic,
+          underline: options.preserveLineStyle ? false : style.underline,
+          strikethrough: options.preserveLineStyle
+            ? false
+            : style.strikethrough,
+          fillColor: options.preserveLineStyle
+            ? lineStyle.color
+            : style.color,
+          matrix,
+        });
+        continue;
+      }
+
+      // The section grew: continue the original leading below the last line.
+      const offset = index - (originals.length - 1);
+      const x =
+        options.align === 'left'
+          ? (firstOrigin.matrix[4] ?? 0)
+          : alignedX(lineText, firstStyle);
+      const matrix: readonly number[] = [
+        firstOrigin.matrix[0] ?? 1,
+        firstOrigin.matrix[1] ?? 0,
+        firstOrigin.matrix[2] ?? 0,
+        firstOrigin.matrix[3] ?? 1,
+        x,
+        (lastOrigin.matrix[5] ?? 0) - lineHeightPt * offset,
+      ];
+      edits.push({
+        objectIndices: [],
+        anchorObjectIndex,
+        text: lineText,
+        fontSize: options.preserveLineStyle
+          ? firstStyle.fontSize
+          : fontSizeForUntouched
+            ? firstStyle.fontSize
+            : style.fontSize > 0
+              ? style.fontSize / firstScale
+              : firstStyle.fontSize,
+        fontFamily: options.preserveLineStyle ? 'original' : style.fontFamily,
+        bold: options.preserveLineStyle ? firstStyle.fontBold : style.bold,
+        italic: options.preserveLineStyle
+          ? firstStyle.fontItalic
+          : style.italic,
+        underline: options.preserveLineStyle ? false : style.underline,
+        strikethrough: options.preserveLineStyle
+          ? false
+          : style.strikethrough,
+        fillColor: options.preserveLineStyle ? firstStyle.color : style.color,
+        matrix,
+      });
+    }
+
+    return edits;
+  }
+
   /** Stable identity of a run across style-only edits (matrix origin). */
   private nativeCoalesceKey(selection: NativeTextSelection): string {
     return `${selection.pageIndex}:${(selection.baseMatrix[4] ?? 0).toFixed(
@@ -3279,23 +4611,55 @@ export class EditorComponent implements OnDestroy {
         return;
       }
       // Show the requested style immediately; the page re-render confirms it.
-      this.nativeSelection.set({ ...selection, style });
+      this.nativeSelection.set({ ...selection, style, styleDirty: true });
       try {
-        const { bytes, result } = await this.textEdit.applyEdit(
+        const { bytes, result } = await this.textEdit.applyEdits(
           selection.pageIndex,
-          this.nativeEditFor(selection, selection.text, style),
-          // Consecutive style tweaks of one run are one undoable step.
+          this.nativeEditsFor(selection, selection.text, style),
+          // Consecutive style tweaks of one block are one undoable step.
           { coalesceKey: this.nativeCoalesceKey(selection) },
         );
         const outcome = result.outcomes[0];
-        this.nativeSelection.set({
-          ...selection,
-          style,
-          objectIndices: outcome?.objectIndices?.length
-            ? outcome.objectIndices
-            : selection.objectIndices,
-          fontName: outcome?.fontName || selection.fontName,
-        });
+        const aligned =
+          result.outcomes.length === (selection.lineTargets?.length ?? 1);
+        if (selection.lineTargets && !aligned) {
+          // A skipped line would shift handles; force a fresh pick instead of
+          // styling the wrong object on the next change.
+          this.nativeSelection.set(null);
+        } else if (selection.lineTargets) {
+          const targets = selection.lineTargets.map((target, index) => {
+            const lineOutcome = result.outcomes[index];
+            return {
+              ...target,
+              objectIndices: lineOutcome?.objectIndices?.length
+                ? lineOutcome.objectIndices
+                : target.objectIndices,
+              objectFontSize:
+                lineOutcome?.fontSize ?? target.objectFontSize,
+              bold: style.bold,
+              italic: style.italic,
+              color: style.color,
+            };
+          });
+          this.nativeSelection.set({
+            ...selection,
+            style,
+            styleDirty: true,
+            lineTargets: targets,
+            objectIndices: targets.flatMap((target) => target.objectIndices),
+            fontName: outcome?.fontName || selection.fontName,
+          });
+        } else {
+          this.nativeSelection.set({
+            ...selection,
+            style,
+            styleDirty: true,
+            objectIndices: outcome?.objectIndices?.length
+              ? outcome.objectIndices
+              : selection.objectIndices,
+            fontName: outcome?.fontName || selection.fontName,
+          });
+        }
         if (result.warnings.length > 0) {
           this.toasts.warning(result.warnings[0]);
         }
@@ -3323,6 +4687,134 @@ export class EditorComponent implements OnDestroy {
       return;
     }
     this.activeNativeEdit.set(null);
+
+    // Whole paragraph / table cell: every original line is replaced in one
+    // worker call, and extra lines are inserted from the first line's anchor.
+    if (active.block) {
+      const block = active.block;
+      const pageIndex = block.pageIndex;
+      const file = this.files.currentFiles()[0];
+      if (!file) {
+        return;
+      }
+      const styleRun = this.nativeDominantRun(block.lines[0]);
+      const firstScale = styleRun.matrixScale > 0 ? styleRun.matrixScale : 1;
+      const selection = this.nativeSelection();
+      const style: NativeTextStyle = selection?.style ?? {
+        fontFamily: 'original',
+        fontSize: Math.round(styleRun.fontSize * firstScale * 100) / 100,
+        bold: styleRun.fontBold,
+        italic: styleRun.fontItalic,
+        underline: false,
+        strikethrough: false,
+        color: styleRun.color,
+      };
+      const preserveLineStyle = !selection?.styleDirty;
+      const page = this.pagesStore.pages().find((p) => p.id === active.pageId);
+      const edits = this.nativeBlockEdits(block, text, style, {
+        wrapWidthPx: Math.max(16, active.width),
+        preview: {
+          fontFamily: active.fontFamily,
+          fontSizePx: active.fontSizePx,
+          bold: active.bold,
+          italic: active.italic,
+        },
+        preserveLineStyle,
+        align: active.align ?? 'left',
+        pageScale: page ? this.getPageDisplaySize(page).scale : 1,
+        scaleX: active.scaleX,
+      });
+
+      this.runNativeTask(async () => {
+        try {
+          const { bytes, result } = await this.textEdit.applyEdits(
+            pageIndex,
+            edits,
+          );
+          this.invalidateNativePage(pageIndex);
+
+          // Outcomes are aligned to input edits only when every edit produced
+          // one; a partial batch would shift the handles of later lines.
+          const aligned = result.outcomes.length === edits.length;
+          const targets: NativeTextLineTarget[] = [];
+          edits.forEach((edit, index) => {
+            const outcome = aligned ? result.outcomes[index] : undefined;
+            if (!outcome || outcome.objectIndices.length === 0) {
+              return;
+            }
+            const original = block.lines[index];
+            const originalStyle = original
+              ? this.nativeDominantRun(original)
+              : styleRun;
+            const matrixScale =
+              originalStyle.matrixScale > 0
+                ? originalStyle.matrixScale
+                : firstScale;
+            targets.push({
+              objectIndices: outcome.objectIndices,
+              matrix: edit.matrix ?? styleRun.matrix,
+              objectFontSize: outcome.fontSize,
+              matrixScale,
+              text: edit.text,
+              bold: preserveLineStyle ? originalStyle.fontBold : style.bold,
+              italic: preserveLineStyle
+                ? originalStyle.fontItalic
+                : style.italic,
+              color: preserveLineStyle ? originalStyle.color : style.color,
+            });
+          });
+
+          // The committed page is the wrapped text, not necessarily the raw
+          // field value; keep the panel's target aligned with real lines.
+          const committedText = edits
+            .filter((edit) => edit.text.trim().length > 0)
+            .map((edit) => edit.text)
+            .join('\n');
+          if (committedText && targets.length > 0) {
+            this.nativeSelection.set({
+              pageId: active.pageId,
+              pageIndex,
+              objectIndices: targets.flatMap((target) => target.objectIndices),
+              baseMatrix: targets[0].matrix,
+              matrixScale: targets[0].matrixScale,
+              objectFontSize: targets[0].objectFontSize,
+              effectiveFontSize: block.lines[0].effectiveFontSize,
+              text: committedText,
+              fontName: result.outcomes[0]?.fontName || styleRun.fontName,
+              style,
+              lineTargets: targets,
+              styleDirty: false,
+            });
+          } else {
+            this.nativeSelection.set(null);
+          }
+
+          if (result.substitutedFonts > 0) {
+            this.toasts.info(
+              'Font substituted for characters the original font lacks.',
+            );
+          } else if (result.warnings.length > 0) {
+            this.toasts.warning(result.warnings[0]);
+          } else {
+            this.toasts.success(
+              block.kind === 'cell'
+                ? 'Table cell updated.'
+                : 'Paragraph updated.',
+            );
+          }
+          this.applyNativeBytesInPlace(bytes, [pageIndex], file);
+        } catch (error) {
+          this.nativeSelection.set(null);
+          this.toasts.error(
+            error instanceof Error
+              ? error.message
+              : 'Could not update the PDF text block.',
+          );
+        }
+      });
+      return;
+    }
+
     const pageIndex = active.run.pageIndex;
     const file = this.files.currentFiles()[0];
     if (!file) {
@@ -3380,15 +4872,7 @@ export class EditorComponent implements OnDestroy {
         const outcome = result.outcomes[0];
 
         // Object handles changed; drop every cached run for the page.
-        this.nativeRunsByKey.update((map) => {
-          const next = new Map(map);
-          for (const key of Array.from(next.keys())) {
-            if (key.startsWith(`${pageIndex}:`)) {
-              next.delete(key);
-            }
-          }
-          return next;
-        });
+        this.invalidateNativePage(pageIndex);
 
         if (text.trim()) {
           this.nativeSelection.set({
@@ -3534,6 +5018,16 @@ export class EditorComponent implements OnDestroy {
         }
         return next;
       });
+      // Re-extract immediately so the next click (and hover highlight) works
+      // without a throw-away click that only loads the page.
+      if (this.contentEditMode()) {
+        const editorPage = this.pagesStore
+          .pages()
+          .find((candidate) => candidate.sourceIndex === pageIndex);
+        if (editorPage) {
+          void this.ensureNativeRuns(editorPage);
+        }
+      }
     }
 
     // Persist the edited bytes + current annotations without a viewer reload.

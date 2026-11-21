@@ -1483,12 +1483,29 @@ function applyEdits(
   const warnings: string[] = [];
   const outcomes: PdfNativeTextEditOutcome[] = [];
   const handled = new Set<number>();
+  const outcomeByIndex = new Map<number, PdfNativeTextEditOutcome>();
 
-  for (const edit of edits) {
+  // Insert-only edits (a paragraph grew past its original line count) read the
+  // typography of an anchor object. Process them first so a later edit in the
+  // same batch cannot remove that anchor before its style is copied.
+  const ordered = edits.map((edit, index) => ({ edit, index }));
+  ordered.sort((a, b) => {
+    const aInsert = a.edit.objectIndices.length === 0 ? 0 : 1;
+    const bInsert = b.edit.objectIndices.length === 0 ? 0 : 1;
+    if (aInsert !== bInsert) {
+      return aInsert - bInsert;
+    }
+    // New lines are inserted at the same anchor index; inserting the last line
+    // first keeps the batch in top-to-bottom order.
+    return aInsert === 0 ? b.index - a.index : a.index - b.index;
+  });
+
+  for (const { edit, index: editIndex } of ordered) {
     const handles = Array.from(new Set(edit.objectIndices)).filter(
       (ptr) => !!ptr && !handled.has(ptr),
     );
-    if (handles.length === 0) {
+    const insertOnly = handles.length === 0 && !!edit.anchorObjectIndex;
+    if (handles.length === 0 && !insertOnly) {
       continue;
     }
     for (const ptr of handles) {
@@ -1513,10 +1530,25 @@ function applyEdits(
         break;
       }
     }
+    if (!anchorPtr && insertOnly) {
+      const anchor = edit.anchorObjectIndex!;
+      if (indexByPtr.has(anchor)) {
+        let anchorType = 0;
+        try {
+          anchorType = api.FPDFPageObj_GetType(anchor);
+        } catch {
+          anchorType = 0;
+        }
+        if (anchorType === 1) {
+          anchorPtr = anchor;
+        }
+      }
+    }
     if (!anchorPtr) {
       warnings.push('This text has changed since it was selected.');
       continue;
     }
+    const insertOnlyEdit = handles.length === 0;
 
     const newText = (edit.text ?? '')
       .replace(/\r\n?/g, ' ')
@@ -1540,7 +1572,7 @@ function applyEdits(
     // and only runs this worker decorated are cleaned up, so an underline that
     // came with the original PDF is left untouched unless the user toggles one.
     let cleanedDecorations = false;
-    if (isHorizontalText(props.matrix)) {
+    if (!insertOnlyEdit && isHorizontalText(props.matrix)) {
       try {
         cleanedDecorations = removeOwnedDecorations(page, decorKey);
         if (
@@ -1586,13 +1618,17 @@ function applyEdits(
         members.push({ ptr, index });
       }
     }
-    if (members.length === 0) {
+    if (members.length === 0 && !insertOnlyEdit) {
       warnings.push('This text has changed since it was selected.');
       continue;
     }
 
-    // Empty input is a genuine native delete of the whole run.
+    // Empty input is a genuine native delete of the whole run. An insert-only
+    // edit has nothing to delete, so an empty line is simply skipped.
     if (!newText.trim()) {
+      if (members.length === 0) {
+        continue;
+      }
       for (const member of members) {
         try {
           if (api.FPDFPage_RemoveObject(page, member.ptr)) {
@@ -1605,7 +1641,7 @@ function applyEdits(
           warnings.push('A text object could not be removed.');
         }
       }
-      outcomes.push({
+      outcomeByIndex.set(editIndex, {
         objectIndices: [],
         bbox: { x: 0, y: 0, width: 0, height: 0 },
         fontSize,
@@ -1783,9 +1819,13 @@ function applyEdits(
     }
 
     // Insert at the earliest original z-order index so the run keeps its layer.
+    // A new line inherits the anchor object's layer, just above it.
     let insertIndex = Number.POSITIVE_INFINITY;
     for (const member of members) {
       insertIndex = Math.min(insertIndex, member.index);
+    }
+    if (!Number.isFinite(insertIndex)) {
+      insertIndex = (indexByPtr.get(anchorPtr) ?? 0) + 1;
     }
     let inserted = false;
     try {
@@ -1817,7 +1857,7 @@ function applyEdits(
       width: 0,
       height: 0,
     };
-    if (wantsDecoration) {
+    if (wantsDecoration && !insertOnlyEdit) {
       const scale =
         Math.sqrt(Math.abs(matrix[0] * matrix[3] - matrix[1] * matrix[2])) || 1;
       const localWidth = newBbox.width > 0 ? newBbox.width / scale : 0;
@@ -1861,7 +1901,7 @@ function applyEdits(
       }
     }
 
-    outcomes.push({
+    outcomeByIndex.set(editIndex, {
       objectIndices: [newObject],
       bbox: newBbox,
       fontSize,
@@ -1869,6 +1909,13 @@ function applyEdits(
     });
 
     applied++;
+  }
+
+  for (let i = 0; i < edits.length; i++) {
+    const outcome = outcomeByIndex.get(i);
+    if (outcome) {
+      outcomes.push(outcome);
+    }
   }
 
   if (applied > 0 || removed > 0) {

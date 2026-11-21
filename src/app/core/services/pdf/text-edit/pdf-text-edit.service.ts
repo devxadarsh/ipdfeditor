@@ -287,17 +287,35 @@ export class PdfTextEditService implements OnDestroy {
     edit: PdfNativeTextEdit,
     options?: { coalesceKey?: string },
   ): Promise<{ bytes: ArrayBuffer; result: PdfNativeTextApplyResult }> {
+    return this.applyEdits(pageIndex, [edit], options);
+  }
+
+  /**
+   * Applies several native edits to one page as a single undoable step.
+   *
+   * Whole-block edits use this: every original line is replaced and any lines
+   * the paragraph gained are inserted from the first line's anchor object, so
+   * the page is saved and snapshotted once.
+   */
+  async applyEdits(
+    pageIndex: number,
+    edits: readonly PdfNativeTextEdit[],
+    options?: { coalesceKey?: string },
+  ): Promise<{ bytes: ArrayBuffer; result: PdfNativeTextApplyResult }> {
     if (this.status() !== 'ready') {
       throw new Error('The text editing engine is not ready.');
     }
     if (this.applying()) {
       throw new Error('Another text edit is still being applied.');
     }
+    if (edits.length === 0) {
+      throw new Error('There is nothing to update.');
+    }
 
     this.applying.set(true);
     this.lastError.set(null);
     try {
-      const result = await this.getApi().applyEdits(pageIndex, [edit]);
+      const result = await this.getApi().applyEdits(pageIndex, edits);
       if (result.applied === 0 && result.removed === 0) {
         throw new Error(
           result.warnings[0] || 'The text object could not be updated.',

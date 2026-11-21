@@ -1256,8 +1256,8 @@
         <i class="fa-solid fa-i-cursor"></i>
         <span>
           <strong>Edit PDF text</strong>
-          <span class="d-none d-md-inline"> — click any text on the page to edit it directly.</span>
-          <span class="d-inline d-md-none"> — tap text to edit.</span>
+          <span class="d-none d-md-inline"> — click a paragraph, line or table cell to edit the whole block at once.</span>
+          <span class="d-inline d-md-none"> — tap a paragraph, line or table cell to edit it.</span>
         </span>
         @if (textEdit.loading()) {
           <span class="editor__native-banner-state">
@@ -1751,10 +1751,60 @@
                     class="editor__native-hitlayer"
                     role="button"
                     tabindex="-1"
-                    aria-label="Click PDF text to edit it"
-                    title="Click text to edit it"
+                    aria-label="Click a paragraph, line or table cell to edit it"
+                    title="Click a paragraph, line or table cell to edit it"
                     (click)="onNativeTextClick($event, page)"
+                    (pointermove)="onNativeTextHover($event, page)"
+                    (pointerleave)="onNativeTextLeave()"
                   ></div>
+                }
+                @if (contentEditMode()) {
+                  <!-- Every editable paragraph / line / table cell is marked
+                       while the text tool is active, like an in-place editor. -->
+                  @if (isPageInRenderWindow(idx)) {
+                    @for (block of getNativeBlocksForPage(page); track block.id) {
+                      @let frame = nativeSectionFrame(block, page);
+                      <div
+                        class="editor__native-section-box"
+                        [class.editor__native-section-box--cell]="block.kind === 'cell'"
+                        [class.editor__native-section-box--active]="isNativeBlockEditing(block)"
+                        aria-hidden="true"
+                        [style.left.px]="frame.left"
+                        [style.top.px]="frame.top"
+                        [style.width.px]="frame.width"
+                        [style.height.px]="frame.height"
+                      ></div>
+                    }
+                  }
+                  @if (hoveredNativeBlock(); as hover) {
+                    @if (hover.pageId === page.id) {
+                      @let hoverFrame = nativeFrameRect(hover.block.normRect, page);
+                      @if (hover.block.tableRect; as table) {
+                        @let tableFrame = nativeFrameRect(table, page);
+                        <div
+                          class="editor__native-table-outline"
+                          aria-hidden="true"
+                          [style.left.px]="tableFrame.left"
+                          [style.top.px]="tableFrame.top"
+                          [style.width.px]="tableFrame.width"
+                          [style.height.px]="tableFrame.height"
+                        ></div>
+                      }
+                      <div
+                        class="editor__native-block-hint"
+                        [class.editor__native-block-hint--cell]="hover.block.kind === 'cell'"
+                        aria-hidden="true"
+                        [style.left.px]="hoverFrame.left"
+                        [style.top.px]="hoverFrame.top"
+                        [style.width.px]="hoverFrame.width"
+                        [style.height.px]="hoverFrame.height"
+                      >
+                        <span class="editor__native-block-hint__tag">
+                          {{ nativeBlockLabel(hover.block) }}
+                        </span>
+                      </div>
+                    }
+                  }
                 }
                 @if (activeNativeEdit(); as edit) {
                   @if (edit.pageId === page.id) {
@@ -1764,7 +1814,9 @@
                       class="editor__native-edit-backdrop"
                       aria-hidden="true"
                       [style.visibility]="
-                        edit.text !== edit.initialText ? 'visible' : 'hidden'
+                        (edit.multiline ?? false) || edit.text !== edit.initialText
+                          ? 'visible'
+                          : 'hidden'
                       "
                       [style.left.px]="edit.backdropRect.left"
                       [style.top.px]="edit.backdropRect.top"
@@ -1782,7 +1834,7 @@
                         [rotation]="page.rotation"
                         [scale]="getPageDisplaySize(page).scale"
                         [region]="edit.backdropRegion"
-                        [hiddenObjects]="edit.run.objectIndices"
+                        [hiddenObjects]="edit.hiddenObjectIndices ?? edit.run.objectIndices"
                       ></app-native-text-backdrop>
                     </div>
                     <app-native-text-edit
@@ -1801,7 +1853,11 @@
                       [bold]="edit.bold"
                       [italic]="edit.italic"
                       [strokePx]="edit.strokePx"
-                      [textVisible]="edit.text !== edit.initialText"
+                      [textVisible]="(edit.multiline ?? false) || edit.text !== edit.initialText"
+                      [multiline]="edit.multiline ?? false"
+                      [lineHeightPx]="edit.lineHeightPx ?? null"
+                      [align]="edit.align ?? 'left'"
+                      [showOutline]="!nativeEditHasMarkedFrame(page)"
                       [busy]="textEdit.applying()"
                       (committed)="onNativeEditCommit($event)"
                       (cancelled)="onNativeEditCancel()"

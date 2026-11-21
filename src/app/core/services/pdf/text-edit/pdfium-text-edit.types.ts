@@ -116,6 +116,14 @@ export interface PdfNativeTextPageInfo {
 export interface PdfNativeTextEdit {
   /** All page objects that make up the edited run (first = anchor). */
   readonly objectIndices: readonly number[];
+  /**
+   * Source object whose font/style seeds a *new* line.
+   *
+   * Used when a paragraph edit adds more lines than it replaces: the edit has
+   * no `objectIndices` of its own, so the worker clones the anchor object's
+   * typography, places the new line at `matrix` and leaves the anchor intact.
+   */
+  readonly anchorObjectIndex?: number;
   readonly text: string;
   /**
    * Text the run had before the edit. Used only as a sanity check when the

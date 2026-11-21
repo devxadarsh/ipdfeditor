@@ -6,7 +6,46 @@
   pointer-events: auto;
 }
 
+// Invisible copy of the field's text. Only its line layout is used: a Range
+// over this node reports where each selected line fragment sits, which lets
+// the field paint a highlight that hugs the glyphs instead of the line box.
+.native-text-edit__mirror {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+  white-space: pre;
+
+  &--wrap {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: normal;
+  }
+}
+
+.native-text-edit__highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.native-text-edit__highlight-band {
+  position: absolute;
+  border-radius: 1px;
+  background: rgba(37, 99, 235, 0.3);
+}
+
 .native-text-edit__area {
+  position: relative;
+  z-index: 1;
   display: block;
   box-sizing: border-box;
   width: 100%;
@@ -17,10 +56,10 @@
   margin: 0;
   border: 0;
   border-radius: 0;
-  // Thin ring only: the caller paints the page's own colour behind the field
-  // (and over the glyphs it replaces), so a heavy border would read as a
-  // floating box instead of in-place editing.
-  outline: 1px solid rgba(37, 99, 235, 0.5);
+  // No border or ring: the editor paints one shared frame around the section
+  // (see the section marker in editor.component), so the field itself must not
+  // add a second, looser outline around its whole layout box.
+  outline: none;
   outline-offset: 0;
   // Transparent on purpose: the backdrop under the field is the page colour,
   // so the preview shows the page exactly as the committed text will.
@@ -41,7 +80,7 @@
   caret-color: currentColor;
 
   &:focus {
-    outline-color: #2563eb;
+    outline: none;
     box-shadow: none;
   }
 
@@ -50,8 +89,24 @@
     cursor: progress;
   }
 
+  // The native band is as tall as the line box; the highlight layer under the
+  // field paints a tighter one instead.
   &::selection {
-    background: rgba(37, 99, 235, 0.32);
+    background: transparent;
+  }
+
+  // Only when the run has no section marker to act as its focus frame.
+  &--outline {
+    outline: 1px solid rgba(37, 99, 235, 0.9);
+  }
+
+  // Whole-block editing wraps inside the section's original width. Explicit
+  // newlines are preserved, and an over-long word breaks instead of pushing
+  // the field wider than the block.
+  &--wrap {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: normal;
   }
 }
 
@@ -66,6 +121,14 @@
     // Keep the page visible: the original glyphs stand in for the preview
     // until the value changes, and a system field background would cover them.
     background: transparent;
-    outline-color: CanvasText;
+    // High-contrast themes may not distinguish the shared section frame, so
+    // restore a system outline for the focused field.
+    &:focus {
+      outline: 2px solid CanvasText;
+    }
+  }
+
+  .native-text-edit__highlight-band {
+    background: Highlight;
   }
 }
