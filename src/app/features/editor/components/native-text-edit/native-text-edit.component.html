@@ -1,0 +1,41 @@
+<div
+  #mirror
+  class="native-text-edit__mirror"
+  [class.native-text-edit__mirror--wrap]="multiline()"
+  [style]="mirrorStyle()"
+  aria-hidden="true"
+>{{ currentText() }}</div>
+
+<div class="native-text-edit__highlight" aria-hidden="true">
+  @for (band of selectionRects(); track $index) {
+    <span
+      class="native-text-edit__highlight-band"
+      [style.left.px]="band.left"
+      [style.top.px]="band.top"
+      [style.width.px]="band.width"
+      [style.height.px]="band.height"
+    ></span>
+  }
+</div>
+
+<textarea
+  #area
+  class="native-text-edit__area"
+  spellcheck="false"
+  autocomplete="off"
+  autocorrect="off"
+  autocapitalize="off"
+  [attr.wrap]="multiline() ? 'soft' : 'off'"
+  [class.native-text-edit__area--wrap]="multiline()"
+  [class.native-text-edit__area--outline]="showOutline()"
+  [style]="areaStyle()"
+  [attr.aria-label]="'Edit PDF text'"
+  [attr.aria-multiline]="multiline()"
+  [disabled]="busy()"
+  (input)="onInput($event)"
+  (select)="scheduleSelectionMeasure()"
+  (mouseup)="scheduleSelectionMeasure()"
+  (keyup)="scheduleSelectionMeasure()"
+  (keydown)="onKeydown($event)"
+  (blur)="onBlur()"
+></textarea>

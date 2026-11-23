@@ -169,7 +169,7 @@ export class EditorOverlayComponent implements OnDestroy {
 
   readonly touchAction = computed(() => {
     const t = this.tool();
-    if (t === 'hand' || t === 'select') {
+    if (t === 'hand' || t === 'select' || t === 'content-edit') {
       return 'pan-x pan-y pinch-zoom';
     }
     return 'none';
@@ -427,6 +427,7 @@ export class EditorOverlayComponent implements OnDestroy {
     }
     const t = this.tool();
     if (t === 'hand' || t === 'content-edit') {
+      // Native text editing is handled by its own hit-test layer.
       return false;
     }
     if (t !== 'select') {
@@ -457,13 +458,16 @@ export class EditorOverlayComponent implements OnDestroy {
 
   readonly hoveredAnnotationId = signal<string | null>(null);
 
-  readonly cursor = computed<'crosshair' | 'default' | 'none' | 'grab' | 'move'>(() => {
+  readonly cursor = computed<'crosshair' | 'default' | 'none' | 'grab' | 'move' | 'text'>(() => {
     if (this.state.pendingPlacement()) {
       return 'crosshair';
     }
     const t = this.tool();
     if (t === 'eraser') {
       return 'none'; // custom circular SVG eraser cursor is drawn
+    }
+    if (t === 'content-edit') {
+      return 'text';
     }
     if (t === 'hand') {
       return 'grab';

@@ -1,6 +1,7 @@
 import {
   Component,
   inject,
+  input,
   output,
   computed,
   signal,
@@ -37,14 +38,19 @@ import {
 } from '../../../../core/constants/shapes';
 import { PanelSectionComponent } from '../../../../shared/components/panel/panel-section.component';
 import { measureTextAnnotation } from '../../../../core/utilities/text-measure.util';
+import {
+  displayFontName,
+  hexToRgba,
+  rgbaToHex,
+} from '../../../../core/utilities/native-text-style.util';
+import type {
+  NativeTextStyle,
+  NativeTextTargetView,
+  PdfNativeFontFamily,
+} from '../../models/native-text-edit.model';
+import type { PdfNativeFontFamilyInfo } from '../../../../core/services/pdf/text-edit/pdfium-text-edit.types';
 import { EditorStateService } from '../../state/editor-state.service';
 import { EditorPagesService } from '../../state/editor-pages.service';
-import { EditorTextEditService } from '../../services/editor-text-edit.service';
-import type {
-  TextRun,
-  TextRunStyleOverrides,
-} from '../../../../core/services/pdf/content-edit/text-run.model';
-import { resolveFontStyles } from '../../../../core/utilities/font-matcher.util';
 
 type StrokeStyle = 'solid' | 'dashed' | 'dotted';
 
@@ -127,9 +133,76 @@ import { MobileTooltipDirective } from '../../../../shared/directives/mobile-too
 export class PropertiesPanelComponent {
   readonly state = inject(EditorStateService);
   private readonly pages = inject(EditorPagesService);
-  readonly textEdit = inject(EditorTextEditService);
 
   readonly collapse = output<void>();
+
+  /** Native PDF text run currently selected in content-edit mode. */
+  readonly nativeTarget = input<NativeTextTargetView | null>(null);
+  readonly nativeBusy = input<boolean>(false);
+  /** Real font families of the open document (from the PDFium worker). */
+  readonly nativeFonts = input<readonly PdfNativeFontFamilyInfo[]>([]);
+  readonly nativeStyleChange = output<Partial<NativeTextStyle>>();
+
+  /** Faces the selected document family offers, shown under the picker. */
+  readonly nativeFamilyFaces = computed<readonly string[]>(() => {
+    const target = this.nativeTarget();
+    if (!target) {
+      return [];
+    }
+    const key = target.style.fontFamily.toLowerCase();
+    if (key === 'original' || key === 'sans' || key === 'serif' || key === 'mono') {
+      return [];
+    }
+    const family = this.nativeFonts().find(
+      (entry) => entry.family.toLowerCase() === key,
+    );
+    return family ? family.faces.map((face) => face.name) : [];
+  });
+
+  readonly rgbaToHex = rgbaToHex;
+  readonly displayFontName = displayFontName;
+  readonly nativeFontSizes: ReadonlyArray<number> = [
+    6, 8, 9, 10, 11, 12, 14, 16, 18, 21, 24, 32, 48, 72,
+  ];
+
+  emitNativeStyle(patch: Partial<NativeTextStyle>): void {
+    if (this.nativeBusy()) {
+      return;
+    }
+    this.nativeStyleChange.emit(patch);
+  }
+
+  setNativeFamily(value: string): void {
+    this.emitNativeStyle({ fontFamily: value as PdfNativeFontFamily });
+  }
+
+  setNativeFontSize(value: string | number): void {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 1 || n > 400) {
+      return;
+    }
+    this.emitNativeStyle({ fontSize: Math.round(n * 100) / 100 });
+  }
+
+  toggleNativeBold(style: NativeTextStyle): void {
+    this.emitNativeStyle({ bold: !style.bold });
+  }
+
+  toggleNativeItalic(style: NativeTextStyle): void {
+    this.emitNativeStyle({ italic: !style.italic });
+  }
+
+  toggleNativeUnderline(style: NativeTextStyle): void {
+    this.emitNativeStyle({ underline: !style.underline });
+  }
+
+  toggleNativeStrikethrough(style: NativeTextStyle): void {
+    this.emitNativeStyle({ strikethrough: !style.strikethrough });
+  }
+
+  setNativeColor(value: string, alpha = 255): void {
+    this.emitNativeStyle({ color: hexToRgba(value, alpha) });
+  }
 
   readonly activeTool = this.state.tool;
   readonly selectMode = this.state.selectMode;
@@ -1054,246 +1127,5 @@ export class PropertiesPanelComponent {
     if (id) {
       this.state.clearPageAnnotations(id);
     }
-  }
-
-  // ─── PDF Content Text Edit Adjustments ──────────────────────────────────────
-
-  getRunText(run: TextRun): string {
-    return run.text;
-  }
-
-  updateRunText(run: TextRun, newText: string): void {
-    if (run.text === newText) return;
-    this.textEdit.applyEdit({ runId: run.id, newText }, true);
-  }
-
-  getRunFontSize(run: TextRun): number {
-    const raw = run.styleOverrides?.fontSize ?? run.fontSize;
-    if (!Number.isFinite(raw) || raw <= 0) return 12;
-    return Math.round(raw * 100) / 100;
-  }
-
-  setRunFontSize(run: TextRun, value: string | number): void {
-    const n = parseFloat(String(value));
-    if (!Number.isNaN(n) && n >= 4 && n <= 140) {
-      const clean = Math.round(n * 100) / 100;
-      this.textEdit.updateActiveRunStyle({ fontSize: clean });
-    }
-  }
-
-  stepRunFontSize(run: TextRun, delta: number): void {
-    const current = this.getRunFontSize(run);
-    const next = Math.max(4, Math.min(140, Math.round((current + delta) * 100) / 100));
-    this.setRunFontSize(run, next);
-  }
-
-  setFontSizeStep(value: string | number): void {
-    const n = parseFloat(String(value));
-    if (!Number.isNaN(n) && n > 0) {
-      this.fontSizeStep.set(n);
-    }
-  }
-
-  getDetectedFontFamily(run: TextRun): string {
-    const styles = resolveFontStyles(run.fontName || run.fontResource);
-    return styles.fontFamily;
-  }
-
-  getDetectedFontLabel(run: TextRun): string {
-    const styles = resolveFontStyles(run.fontName || run.fontResource);
-    return styles.cleanName;
-  }
-
-  getRunFontFamily(run: TextRun): string {
-    if (run.styleOverrides?.fontFamily) {
-      return run.styleOverrides.fontFamily;
-    }
-    return this.getDetectedFontFamily(run);
-  }
-
-  setRunFontFamily(run: TextRun, family: string): void {
-    this.textEdit.updateActiveRunStyle({ fontFamily: family });
-  }
-
-  isRunBold(run: TextRun): boolean {
-    if (run.styleOverrides?.fontWeight !== undefined) {
-      const w = run.styleOverrides.fontWeight;
-      return w === 'bold' || Number(w) >= 700;
-    }
-    const styles = resolveFontStyles(run.fontName || run.fontResource);
-    return styles.fontWeight === 'bold' || Number(styles.fontWeight) >= 700;
-  }
-
-  toggleRunBold(run: TextRun): void {
-    const nextBold = !this.isRunBold(run);
-    this.textEdit.updateActiveRunStyle({
-      fontWeight: nextBold ? 700 : 400,
-    });
-  }
-
-  isRunItalic(run: TextRun): boolean {
-    if (run.styleOverrides?.fontStyle !== undefined) {
-      return run.styleOverrides.fontStyle === 'italic';
-    }
-    const styles = resolveFontStyles(run.fontName || run.fontResource);
-    return styles.fontStyle === 'italic';
-  }
-
-  toggleRunItalic(run: TextRun): void {
-    const nextItalic = !this.isRunItalic(run);
-    this.textEdit.updateActiveRunStyle({
-      fontStyle: nextItalic ? 'italic' : 'normal',
-    });
-  }
-
-  isRunUnderline(run: TextRun): boolean {
-    return Boolean(run.styleOverrides?.underline);
-  }
-
-  toggleRunUnderline(run: TextRun): void {
-    this.textEdit.updateActiveRunStyle({
-      underline: !this.isRunUnderline(run),
-    });
-  }
-
-  getRunColor(run: TextRun): string {
-    if (run.styleOverrides?.color) return run.styleOverrides.color;
-    return EditorTextEditService.pdfColorToCss(run.color);
-  }
-
-  setRunColor(run: TextRun, color: string): void {
-    this.textEdit.updateActiveRunStyle({ color });
-  }
-
-  getRunLetterSpacing(run: TextRun): number {
-    if (run.styleOverrides?.letterSpacing !== undefined) {
-      return run.styleOverrides.letterSpacing;
-    }
-    return run.charSpacing ?? 0;
-  }
-
-  setRunLetterSpacing(run: TextRun, value: string | number): void {
-    const n = Number(value);
-    if (!Number.isNaN(n)) {
-      this.textEdit.updateActiveRunStyle({ letterSpacing: n });
-    }
-  }
-
-  getRunLineHeight(run: TextRun): number {
-    return run.styleOverrides?.lineHeight ?? 1.2;
-  }
-
-  setRunLineHeight(run: TextRun, value: string | number): void {
-    const n = Number(value);
-    if (!Number.isNaN(n) && n >= 0.8 && n <= 3.5) {
-      this.textEdit.updateActiveRunStyle({ lineHeight: Math.round(n * 10) / 10 });
-    }
-  }
-
-  getRunPaddingX(run: TextRun): number {
-    return run.styleOverrides?.paddingX ?? 0;
-  }
-
-  setRunPaddingX(run: TextRun, value: string | number): void {
-    const n = Number(value);
-    if (!Number.isNaN(n) && n >= 0 && n <= 100) {
-      this.textEdit.updateActiveRunStyle({ paddingX: n });
-    }
-  }
-
-  getRunPaddingY(run: TextRun): number {
-    return run.styleOverrides?.paddingY ?? 0;
-  }
-
-  setRunPaddingY(run: TextRun, value: string | number): void {
-    const n = Number(value);
-    if (!Number.isNaN(n) && n >= 0 && n <= 100) {
-      this.textEdit.updateActiveRunStyle({ paddingY: n });
-    }
-  }
-
-  getRunMarginX(run: TextRun): number {
-    return run.styleOverrides?.marginX ?? 0;
-  }
-
-  setRunMarginX(run: TextRun, value: string | number): void {
-    const n = Number(value);
-    if (!Number.isNaN(n) && n >= -200 && n <= 200) {
-      this.textEdit.updateActiveRunStyle({ marginX: n });
-    }
-  }
-
-  getRunMarginY(run: TextRun): number {
-    return run.styleOverrides?.marginY ?? 0;
-  }
-
-  setRunMarginY(run: TextRun, value: string | number): void {
-    const n = Number(value);
-    if (!Number.isNaN(n) && n >= -200 && n <= 200) {
-      this.textEdit.updateActiveRunStyle({ marginY: n });
-    }
-  }
-
-  resetRunOffsets(): void {
-    this.textEdit.updateActiveRunStyle({ marginX: 0, marginY: 0 });
-  }
-
-  isRunBackgroundEnabled(run: TextRun): boolean {
-    return Boolean(run.styleOverrides?.backgroundEnabled);
-  }
-
-  setRunBackgroundEnabled(run: TextRun, enabled: boolean): void {
-    this.textEdit.updateActiveRunStyle({
-      backgroundEnabled: enabled,
-      backgroundColor: run.styleOverrides?.backgroundColor || '#ffffff',
-    });
-  }
-
-  getRunBackgroundColor(run: TextRun): string {
-    return run.styleOverrides?.backgroundColor || '#ffffff';
-  }
-
-  setRunBackgroundColor(run: TextRun, color: string): void {
-    this.textEdit.updateActiveRunStyle({
-      backgroundEnabled: true,
-      backgroundColor: color,
-    });
-  }
-
-  getRunAlign(run: TextRun): 'left' | 'center' | 'right' {
-    return run.styleOverrides?.textAlign ?? 'left';
-  }
-
-  setRunAlign(run: TextRun, align: 'left' | 'center' | 'right'): void {
-    this.textEdit.updateActiveRunStyle({ textAlign: align });
-  }
-
-  getRunTransform(run: TextRun): 'none' | 'uppercase' | 'lowercase' | 'capitalize' {
-    return run.styleOverrides?.textTransform ?? 'none';
-  }
-
-  setRunTransform(run: TextRun, transform: 'none' | 'uppercase' | 'lowercase' | 'capitalize'): void {
-    const next = this.getRunTransform(run) === transform ? 'none' : transform;
-    this.textEdit.updateActiveRunStyle({ textTransform: next });
-  }
-
-  getRunOpacity(run: TextRun): number {
-    return Math.round((run.styleOverrides?.opacity ?? 1) * 100);
-  }
-
-  setRunOpacity(run: TextRun, value: string | number): void {
-    const n = Number(value);
-    if (!Number.isNaN(n)) {
-      const clamped = Math.max(10, Math.min(100, n)) / 100;
-      this.textEdit.updateActiveRunStyle({ opacity: clamped });
-    }
-  }
-
-  resetRunStyling(): void {
-    this.textEdit.resetActiveRunStyle();
-  }
-
-  finishTextEditing(): void {
-    this.textEdit.deactivate();
   }
 }

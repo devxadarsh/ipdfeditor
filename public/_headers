@@ -17,6 +17,11 @@
 /*.css
   Cache-Control: public, max-age=31536000, immutable
 
+# PDFium wasm is served from a stable, unhashed URL. Revalidate it so a
+# dependency bump cannot pair a new worker bundle with year-old wasm bytes.
+/pdfium.wasm
+  Cache-Control: public, max-age=0, must-revalidate
+
 /*.wasm
   Cache-Control: public, max-age=31536000, immutable
 

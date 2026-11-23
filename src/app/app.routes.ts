@@ -201,25 +201,5 @@ export const routes: Routes = [
       },
     ],
   },
-  // ── TEMPORARY: Prompt 1 Spike Verification Route ─────────────────────────
-  // Remove after acceptance criteria for Prompt 1 are verified.
-  {
-    path: 'mupdf-spike',
-    loadComponent: () =>
-      import('./features/mupdf-spike/mupdf-spike.component').then(
-        (m) => m.MupdfSpikeComponent,
-      ),
-    title: '[DEV] mupdf Spike — iPDFEditor',
-  },
-  // ── TEMPORARY: Prompt 2 Spike Verification Route ─────────────────────────
-  // Remove after acceptance criteria for Prompt 2 are verified.
-  {
-    path: 'font-glyph-spike',
-    loadComponent: () =>
-      import('./features/font-glyph-spike/font-glyph-spike.component').then(
-        (m) => m.FontGlyphSpikeComponent,
-      ),
-    title: '[DEV] Font Glyph Spike — iPDFEditor',
-  },
   { path: '**', redirectTo: '' },
 ];

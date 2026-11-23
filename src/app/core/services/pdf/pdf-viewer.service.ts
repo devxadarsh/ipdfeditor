@@ -101,26 +101,61 @@ export function calcMatchNormRect(
   const c3 = toPdfPoint(localXEnd, localYTop);
   const c4 = toPdfPoint(localXStart, localYTop);
 
-  const toViewPoint = (p: [number, number]): [number, number] => {
-    if (viewport && typeof viewport.convertToViewportPoint === 'function') {
-      return viewport.convertToViewportPoint(p[0], p[1]);
-    }
-    const t = viewport?.transform;
-    if (t && t.length >= 6) {
-      return [t[0] * p[0] + t[2] * p[1] + t[4], t[1] * p[0] + t[3] * p[1] + t[5]];
-    }
-    return [p[0], (viewport?.height || 0) - p[1]];
-  };
+  return normRectFromViewportPoints(viewport, [c1, c2, c3, c4]);
+}
 
-  const v1 = toViewPoint(c1);
-  const v2 = toViewPoint(c2);
-  const v3 = toViewPoint(c3);
-  const v4 = toViewPoint(c4);
+// Structural types for the pdf.js document / page proxy that ngx-extended-pdf-viewer
+// hands to us via its `pagesLoaded` event. ngx owns the single pdf.js instance at
+// runtime (the only pdf.js used by the app). These minimal shapes are enough
+// for sizing, text extraction and canvas rendering.
+interface PdfjsViewport {
+  readonly width: number;
+  readonly height: number;
+  readonly transform?: readonly number[];
+  convertToViewportPoint?(x: number, y: number): [number, number];
+}
 
-  const minX = Math.min(v1[0], v2[0], v3[0], v4[0]);
-  const maxX = Math.max(v1[0], v2[0], v3[0], v4[0]);
-  const minY = Math.min(v1[1], v2[1], v3[1], v4[1]);
-  const maxY = Math.max(v1[1], v2[1], v3[1], v4[1]);
+/** A rect in normalized page-display coordinates ([0, 1], top-left origin). */
+export interface NormRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Maps a PDF user-space point through a pdf.js viewport. */
+function toViewportPoint(
+  viewport: PdfjsViewport | null | undefined,
+  x: number,
+  y: number,
+): [number, number] {
+  if (viewport && typeof viewport.convertToViewportPoint === 'function') {
+    return viewport.convertToViewportPoint(x, y);
+  }
+  const t = viewport?.transform;
+  if (t && t.length >= 6) {
+    return [t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5]];
+  }
+  return [x, (viewport?.height || 0) - y];
+}
+
+/** Normalizes PDF-space corner points into a [0, 1] viewport rect. */
+function normRectFromViewportPoints(
+  viewport: PdfjsViewport | null | undefined,
+  points: ReadonlyArray<readonly [number, number]>,
+): NormRect {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const [x, y] of points) {
+    const [vx, vy] = toViewportPoint(viewport, x, y);
+    minX = Math.min(minX, vx);
+    maxX = Math.max(maxX, vx);
+    minY = Math.min(minY, vy);
+    maxY = Math.max(maxY, vy);
+  }
 
   const vpW = viewport?.width || 1;
   const vpH = viewport?.height || 1;
@@ -133,13 +168,23 @@ export function calcMatchNormRect(
   };
 }
 
-// Structural types for the pdf.js document / page proxy that ngx-extended-pdf-viewer
-// hands to us via its `pagesLoaded` event. ngx owns the single pdf.js instance at
-// runtime (the only pdf.js used by the app). These minimal shapes are enough
-// for sizing, text extraction and canvas rendering.
-interface PdfjsViewport {
-  readonly width: number;
-  readonly height: number;
+/**
+ * Maps a rect in PDF user space (points, bottom-left origin, y-up) into
+ * normalized display coordinates using a pdf.js viewport.
+ */
+export function pdfRectToNormRect(
+  viewport: PdfjsViewport,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): NormRect {
+  return normRectFromViewportPoints(viewport, [
+    [x, y],
+    [x + width, y],
+    [x, y + height],
+    [x + width, y + height],
+  ]);
 }
 interface PdfjsTextItem {
   readonly str?: string;
@@ -201,6 +246,12 @@ export class PdfViewerService {
     const page = await this.getPage(pageIndex);
     const viewport = page.getViewport({ scale: 1, rotation });
     return { width: viewport.width, height: viewport.height };
+  }
+
+  /** Returns the pdf.js viewport (at scale 1) used to align overlays. */
+  async getPageViewport(pageIndex: number, rotation = 0): Promise<PdfjsViewport> {
+    const page = await this.getPage(pageIndex);
+    return page.getViewport({ scale: 1, rotation });
   }
 
   async renderPage(
