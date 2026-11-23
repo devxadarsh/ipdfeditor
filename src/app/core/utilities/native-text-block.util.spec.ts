@@ -1,4 +1,11 @@
-import { buildTextBlocks, type TextBlockRunLike } from './native-text-block.util';
+import {
+  buildTextBlocks,
+  isSimpleParagraphLines,
+  mergeListItems,
+  mergeParagraphLines,
+  reflowSectionLines,
+  type TextBlockRunLike,
+} from './native-text-block.util';
 
 function run(
   id: string,
@@ -181,5 +188,124 @@ describe('buildTextBlocks', () => {
     expect(blocks.length).toBe(1);
     expect(blocks[0].kind).toBe('paragraph');
     expect(blocks[0].lines.length).toBe(3);
+  });
+});
+
+describe('simple paragraph reflow', () => {
+  it('joins hard-wrapped prose lines into one logical paragraph', () => {
+    const merged = mergeParagraphLines([
+      'A paragraph that was wrapped',
+      'across several PDF lines',
+      'should resize as one section.',
+    ]);
+
+    expect(merged).toBe(
+      'A paragraph that was wrapped across several PDF lines should resize as one section.',
+    );
+  });
+
+  it('rejoins a word split with a trailing hyphen', () => {
+    expect(
+      mergeParagraphLines(['A hyphen-', 'ated line']),
+    ).toBe('A hyphenated line');
+  });
+
+  it('keeps explicit blank lines as paragraph breaks', () => {
+    expect(
+      mergeParagraphLines(['First paragraph', '', 'Second paragraph']),
+    ).toBe('First paragraph\nSecond paragraph');
+  });
+
+  it('only reflows plain paragraphs', () => {
+    expect(isSimpleParagraphLines(['Plain first', 'plain second'])).toBe(true);
+    expect(isSimpleParagraphLines(['• Bullet point', 'Next line'])).toBe(false);
+    expect(isSimpleParagraphLines(['1. Numbered point', 'Next line'])).toBe(
+      false,
+    );
+    expect(isSimpleParagraphLines(['(a) Lettered point', 'Next line'])).toBe(
+      false,
+    );
+    expect(isSimpleParagraphLines(['- Dash point', 'Next line'])).toBe(false);
+    expect(
+      isSimpleParagraphLines([
+        '4.1 Use Case 1: OTP Generation and Verification',
+        '4.2 Use Case 2: Idempotency Keys for Payment APIs',
+        '4.3 Use Case 3: Rate Limiting - Merchant API Throttling',
+      ]),
+    ).toBe(false);
+    expect(
+      isSimpleParagraphLines(['4.1.2 Nested point', 'Next line']),
+    ).toBe(false);
+  });
+
+  it('keeps numbered points separate while reflowing their continuations', () => {
+    expect(
+      mergeListItems([
+        '4.1 Use Case 1: OTP Generation',
+        'and Verification',
+        '4.2 Use Case 2: Idempotency Keys',
+        'for Payment APIs',
+      ]),
+    ).toBe(
+      '4.1 Use Case 1: OTP Generation and Verification\n' +
+        '4.2 Use Case 2: Idempotency Keys for Payment APIs',
+    );
+  });
+
+  it('does not join one bullet point to the next', () => {
+    expect(
+      mergeListItems(['• First point', 'continues here', '• Second point']),
+    ).toBe('• First point continues here\n• Second point');
+  });
+
+  it('keeps points separate when the section starts with a heading', () => {
+    expect(
+      isSimpleParagraphLines([
+        'Key features',
+        '• First point',
+        '• Second point',
+      ]),
+    ).toBe(false);
+    expect(
+      mergeListItems([
+        'Key features',
+        '• First point',
+        'continues here',
+        '• Second point',
+      ]),
+    ).toBe('Key features\n• First point continues here\n• Second point');
+  });
+
+  it('recognises symbol-font bullets used by PDFs', () => {
+    expect(isSimpleParagraphLines(['\uF0B7 Point', 'Next line'])).toBe(false);
+    expect(isSimpleParagraphLines(['\uF0A7 Point', 'Next line'])).toBe(false);
+  });
+
+  it('recognises other common point styles', () => {
+    const points = [
+      '☑ Completed item',
+      '① First item',
+      'Step 1: Generate the OTP',
+      'Section 4.1: Payment flow',
+      'Q3. How are keys stored?',
+    ];
+    for (const point of points) {
+      expect(isSimpleParagraphLines([point, 'More text'])).toBe(false);
+    }
+  });
+
+  it('selects the matching reflow shape for each section style', () => {
+    expect(
+      reflowSectionLines(['Plain prose that was', 'wrapped by the PDF.']),
+    ).toBe('Plain prose that was wrapped by the PDF.');
+
+    expect(
+      reflowSectionLines([
+        'Key features',
+        '• First point',
+        'continues here',
+        '• Second point',
+      ]),
+    ).toBe('Key features\n• First point continues here\n• Second point');
   });
 });

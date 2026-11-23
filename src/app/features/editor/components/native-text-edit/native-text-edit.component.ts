@@ -215,6 +215,26 @@ export class NativeTextEditComponent implements AfterViewInit, OnDestroy {
     this.areaRef()?.nativeElement.focus({ preventScroll: true });
   }
 
+  /**
+   * Replaces the field value while it keeps focus.
+   *
+   * Width reflow needs the paragraph's hard PDF line breaks removed before the
+   * browser can wrap it at the new width. The input stays focused during the
+   * drag, so the regular value effect would not update it.
+   */
+  replaceText(text: string): void {
+    const el = this.areaRef()?.nativeElement;
+    if (!el || this.settled) {
+      return;
+    }
+    const start = Math.min(el.selectionStart ?? text.length, text.length);
+    const end = Math.min(el.selectionEnd ?? text.length, text.length);
+    el.value = text;
+    el.setSelectionRange(start, end);
+    this.currentText.set(text);
+    this.scheduleSelectionMeasure();
+  }
+
   /** Re-measures after the browser has applied the current selection. */
   scheduleSelectionMeasure(): void {
     if (this.measureFrame || typeof requestAnimationFrame === 'undefined') {

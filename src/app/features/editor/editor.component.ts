@@ -77,6 +77,7 @@ import type {
 import {
   blockAtPoint,
   buildTextBlocks,
+  reflowSectionLines,
   type TextBlock,
   type TextBlockLine,
 } from '../../core/utilities/native-text-block.util';
@@ -3033,6 +3034,45 @@ export class EditorComponent implements OnDestroy {
     setTimeout(() => this.nativeTextEditRef()?.focusField(), 0);
   }
 
+  /**
+   * Turns a wrapped PDF section back into logical text before resizing.
+   *
+   * The extracted section stores one hard line break per visual line. Keeping
+   * those breaks would only let a point shrink (each line wraps further), never
+   * widen. A plain paragraph is joined into one line; a bullet/numbered section
+   * joins only its continuation lines, so every point keeps its marker and
+   * remains a separate point while still re-wrapping with the new width.
+   */
+  private nativeReflowParagraphForResize(
+    active: ActiveNativeTextEdit,
+    dx: number,
+  ): ActiveNativeTextEdit {
+    if (
+      dx === 0 ||
+      !active.block ||
+      active.text !== active.initialText
+    ) {
+      return active;
+    }
+    const lines = active.text.split('\n');
+    if (lines.length < 2) {
+      return active;
+    }
+    const merged = reflowSectionLines(lines);
+    if (merged === active.text) {
+      return active;
+    }
+    // The field stays focused during the drag, so push the new value into it
+    // explicitly; otherwise its stale hard breaks would wrap differently from
+    // the frame the drag is producing.
+    this.nativeTextEditRef()?.replaceText(merged);
+    const selection = this.nativeSelection();
+    if (selection?.block?.id === active.block.id) {
+      this.nativeSelection.set({ ...selection, text: merged });
+    }
+    return { ...active, text: merged };
+  }
+
   onNativeSectionResizeMove(event: PointerEvent): void {
     const resize = this.nativeResize;
     const active = this.activeNativeEdit();
@@ -3063,26 +3103,31 @@ export class EditorComponent implements OnDestroy {
         Math.max(resize.boxLeft + minWidth, resize.boxRight + dx),
       );
     }
+    const current = this.nativeReflowParagraphForResize(active, dx);
+    const block = current.block;
+    if (!block) {
+      return;
+    }
     const layout = this.nativeBlockEditLayout(
-      active.block,
+      block,
       page,
       {
-        fontFamily: active.fontFamily,
-        text: active.text,
-        bold: active.bold,
-        italic: active.italic,
-        strokePx: active.strokePx,
-        fontIsDocument: active.fontIsDocument,
+        fontFamily: current.fontFamily,
+        text: current.text,
+        bold: current.bold,
+        italic: current.italic,
+        strokePx: current.strokePx,
+        fontIsDocument: current.fontIsDocument,
       },
       {
         boxLeft: left,
         boxRight: right,
-        offsetX: active.offsetX,
-        offsetY: active.offsetY,
+        offsetX: current.offsetX,
+        offsetY: current.offsetY,
       },
     );
     this.activeNativeEdit.set({
-      ...active,
+      ...current,
       ...layout,
       boxLeft: left,
       boxRight: right,
