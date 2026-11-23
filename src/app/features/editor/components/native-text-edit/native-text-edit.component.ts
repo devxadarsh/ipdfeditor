@@ -210,6 +210,11 @@ export class NativeTextEditComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  /** Restores text focus after a section-border drag. */
+  focusField(): void {
+    this.areaRef()?.nativeElement.focus({ preventScroll: true });
+  }
+
   /** Re-measures after the browser has applied the current selection. */
   scheduleSelectionMeasure(): void {
     if (this.measureFrame || typeof requestAnimationFrame === 'undefined') {

@@ -1927,7 +1927,20 @@
             <span class="props__label">Selected text</span>
             <span class="props__hint-inline" [title]="nt.fontName">{{ displayFontName(nt.fontName) || 'Embedded font' }}</span>
           </div>
-          <p class="props__native-quote">{{ nt.text }}</p>
+          <textarea
+            class="pf-input props__textarea"
+            rows="3"
+            [value]="nt.text"
+            [disabled]="nativeBusy()"
+            (change)="emitNativeText($any($event.target).value, nt.text)"
+            (keydown)="onNativeTextKeydown($event)"
+            placeholder="Edit the selected PDF text…"
+            aria-label="Edit selected PDF text"
+          ></textarea>
+          <p class="props__hint props__native-hint">
+            <i class="fa-solid fa-circle-info"></i>
+            Press Ctrl/Cmd + Enter or click away to apply.
+          </p>
         </div>
 
         <div class="props__divider"></div>
@@ -2033,6 +2046,50 @@
               title="Text color"
               aria-label="Text color"
             />
+          </div>
+        </div>
+
+        <div class="props__group">
+          <div class="props__row props__row--between">
+            <label class="props__label">Alignment</label>
+            @if (!nt.canAlign) {
+              <span class="props__hint-inline">Paragraphs only</span>
+            }
+          </div>
+          <div class="props__seg-group props__seg-group--full">
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="nt.align === 'left'"
+              [disabled]="nativeBusy() || !nt.canAlign"
+              (click)="setNativeAlign('left')"
+              title="Align paragraph left"
+              aria-label="Align paragraph left"
+            >
+              <i class="fa-solid fa-align-left"></i> Left
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="nt.align === 'center'"
+              [disabled]="nativeBusy() || !nt.canAlign"
+              (click)="setNativeAlign('center')"
+              title="Align paragraph center"
+              aria-label="Align paragraph center"
+            >
+              <i class="fa-solid fa-align-center"></i> Center
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [class.props__seg-btn--on]="nt.align === 'right'"
+              [disabled]="nativeBusy() || !nt.canAlign"
+              (click)="setNativeAlign('right')"
+              title="Align paragraph right"
+              aria-label="Align paragraph right"
+            >
+              <i class="fa-solid fa-align-right"></i> Right
+            </button>
           </div>
         </div>
 

@@ -5,6 +5,16 @@ import type {
 
 export type { PdfNativeFontFamily };
 
+export type NativeTextAlign = 'left' | 'center' | 'right';
+
+/** Typography used to measure and preview native text while editing. */
+export interface NativeTextPreview {
+  readonly fontFamily: string;
+  readonly fontSizePx: number;
+  readonly bold: boolean;
+  readonly italic: boolean;
+}
+
 /** Live typography state of the native text run being edited. */
 export interface NativeTextStyle {
   readonly fontFamily: PdfNativeFontFamily;
@@ -25,4 +35,8 @@ export interface NativeTextTargetView {
   readonly text: string;
   readonly fontName: string;
   readonly style: NativeTextStyle;
+  /** Paragraph alignment of the selected section. */
+  readonly align: NativeTextAlign;
+  /** Whether alignment can be applied to this selection (paragraphs/lines). */
+  readonly canAlign: boolean;
 }

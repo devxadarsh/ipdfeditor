@@ -44,6 +44,7 @@ import {
   rgbaToHex,
 } from '../../../../core/utilities/native-text-style.util';
 import type {
+  NativeTextAlign,
   NativeTextStyle,
   NativeTextTargetView,
   PdfNativeFontFamily,
@@ -142,6 +143,10 @@ export class PropertiesPanelComponent {
   /** Real font families of the open document (from the PDFium worker). */
   readonly nativeFonts = input<readonly PdfNativeFontFamilyInfo[]>([]);
   readonly nativeStyleChange = output<Partial<NativeTextStyle>>();
+  /** Replaces the selected section's text from the panel. */
+  readonly nativeTextChange = output<string>();
+  /** Changes paragraph alignment of the selected section. */
+  readonly nativeAlignChange = output<NativeTextAlign>();
 
   /** Faces the selected document family offers, shown under the picker. */
   readonly nativeFamilyFaces = computed<readonly string[]>(() => {
@@ -170,6 +175,31 @@ export class PropertiesPanelComponent {
       return;
     }
     this.nativeStyleChange.emit(patch);
+  }
+
+  emitNativeText(value: string, current: string): void {
+    if (this.nativeBusy()) {
+      return;
+    }
+    const next = value.replace(/\r\n?/g, '\n');
+    if (next !== current) {
+      this.nativeTextChange.emit(next);
+    }
+  }
+
+  onNativeTextKeydown(event: KeyboardEvent): void {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      // Blurring commits through the same `change` path as clicking away.
+      (event.target as HTMLTextAreaElement).blur();
+    }
+  }
+
+  setNativeAlign(align: NativeTextAlign): void {
+    if (this.nativeBusy()) {
+      return;
+    }
+    this.nativeAlignChange.emit(align);
   }
 
   setNativeFamily(value: string): void {
