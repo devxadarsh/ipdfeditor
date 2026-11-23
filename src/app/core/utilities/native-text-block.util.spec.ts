@@ -165,4 +165,21 @@ describe('buildTextBlocks', () => {
       'Right aligned longer line',
     ]);
   });
+
+  it('keeps wrapped lines with the same text origin in one paragraph', () => {
+    const first = run('1', 'Wrapped first line', 0.1, 0.1, 0.5);
+    const second = run('2', 'Wrapped second line', 0.1, 0.117, 0.5);
+    // A wider first glyph moves the ink box right while the line still starts
+    // at the same text-matrix origin.
+    const last = {
+      ...run('3', 'Short last line', 0.115, 0.134, 0.28),
+      matrix: [1, 0, 0, 1, 100, (1 - 0.134) * 1000],
+    };
+
+    const blocks = buildTextBlocks([first, second, last], 0);
+
+    expect(blocks.length).toBe(1);
+    expect(blocks[0].kind).toBe('paragraph');
+    expect(blocks[0].lines.length).toBe(3);
+  });
 });

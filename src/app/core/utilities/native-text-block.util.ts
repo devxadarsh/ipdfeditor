@@ -522,10 +522,31 @@ export function buildTextBlocks<TRun extends TextBlockRunLike>(
     if (leftDelta > Math.max(0.025, lineHeight * 4.5) && overlapRatio < 0.55) {
       return false;
     }
-    if (!alignmentMatches(paragraph, next)) {
+    if (!styleCompatible(previous, next)) {
       return false;
     }
-    return styleCompatible(previous, next);
+    // Wrapped lines written back to the PDF share the exact text-matrix
+    // origin. Their ink boxes can differ by the first glyph's side bearing,
+    // which is enough for the alignment heuristic to see a new section and
+    // break a paragraph apart after a width change. An identical origin is
+    // stronger evidence than those few pixels of bearing.
+    const previousOrigin = previous.runs[0]?.matrix[4];
+    const nextOrigin = next.runs[0]?.matrix[4];
+    if (
+      previousOrigin !== undefined &&
+      nextOrigin !== undefined &&
+      Number.isFinite(previousOrigin) &&
+      Number.isFinite(nextOrigin)
+    ) {
+      const originTolerance = Math.max(
+        0.1,
+        effectiveSize(dominantRun(previous.runs) ?? previous.runs[0]) * 0.02,
+      );
+      if (Math.abs(nextOrigin - previousOrigin) <= originTolerance) {
+        return true;
+      }
+    }
+    return alignmentMatches(paragraph, next);
   };
 
   const paragraphs: Segment<TRun>[][] = [];

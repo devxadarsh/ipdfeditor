@@ -2051,7 +2051,7 @@
 
         <div class="props__group">
           <div class="props__row props__row--between">
-            <label class="props__label">Alignment</label>
+            <label class="props__label">Text alignment</label>
             @if (!nt.canAlign) {
               <span class="props__hint-inline">Paragraphs only</span>
             }
@@ -2063,8 +2063,8 @@
               [class.props__seg-btn--on]="nt.align === 'left'"
               [disabled]="nativeBusy() || !nt.canAlign"
               (click)="setNativeAlign('left')"
-              title="Align paragraph left"
-              aria-label="Align paragraph left"
+              title="Align text inside the section to the left"
+              aria-label="Align text left inside section"
             >
               <i class="fa-solid fa-align-left"></i> Left
             </button>
@@ -2074,8 +2074,8 @@
               [class.props__seg-btn--on]="nt.align === 'center'"
               [disabled]="nativeBusy() || !nt.canAlign"
               (click)="setNativeAlign('center')"
-              title="Align paragraph center"
-              aria-label="Align paragraph center"
+              title="Center text inside the section"
+              aria-label="Center text inside section"
             >
               <i class="fa-solid fa-align-center"></i> Center
             </button>
@@ -2085,12 +2085,65 @@
               [class.props__seg-btn--on]="nt.align === 'right'"
               [disabled]="nativeBusy() || !nt.canAlign"
               (click)="setNativeAlign('right')"
-              title="Align paragraph right"
-              aria-label="Align paragraph right"
+              title="Align text inside the section to the right"
+              aria-label="Align text right inside section"
             >
               <i class="fa-solid fa-align-right"></i> Right
             </button>
           </div>
+          <p class="props__hint props__native-hint">
+            Aligns every line inside the selected section.
+          </p>
+        </div>
+
+        <div class="props__group">
+          <label class="props__label">Section on page</label>
+          <div class="props__seg-group props__seg-group--full">
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [disabled]="nativeBusy() || !nt.canAlign"
+              (click)="setNativePageAlign('left')"
+              title="Place section at the page's left text edge"
+              aria-label="Place section at page left"
+            >
+              <i class="fa-solid fa-align-left"></i>
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [disabled]="nativeBusy() || !nt.canAlign"
+              (click)="setNativePageAlign('center')"
+              title="Center section on the page"
+              aria-label="Center section on page"
+            >
+              <i class="fa-solid fa-align-center"></i>
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [disabled]="nativeBusy() || !nt.canAlign"
+              (click)="setNativePageAlign('right')"
+              title="Place section at the page's right text edge"
+              aria-label="Place section at page right"
+            >
+              <i class="fa-solid fa-align-right"></i>
+            </button>
+            <button
+              type="button"
+              class="props__seg-btn props__field--grow"
+              [disabled]="nativeBusy() || !nt.canAlign"
+              (click)="setNativePageAlign('full')"
+              title="Stretch section across the page's text width"
+              aria-label="Stretch section to page width"
+            >
+              <i class="fa-solid fa-arrows-left-right"></i>
+            </button>
+          </div>
+          <p class="props__hint props__native-hint">
+            Moves the whole section inside the page's text frame. Use Full to
+            span the page width.
+          </p>
         </div>
 
         <div class="props__group">

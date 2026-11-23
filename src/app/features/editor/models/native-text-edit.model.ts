@@ -7,6 +7,9 @@ export type { PdfNativeFontFamily };
 
 export type NativeTextAlign = 'left' | 'center' | 'right';
 
+/** Placement of the whole section inside the page's text frame. */
+export type NativeTextPageAlign = 'left' | 'center' | 'right' | 'full';
+
 /** Typography used to measure and preview native text while editing. */
 export interface NativeTextPreview {
   readonly fontFamily: string;

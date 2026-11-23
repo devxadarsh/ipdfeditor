@@ -45,6 +45,7 @@ import {
 } from '../../../../core/utilities/native-text-style.util';
 import type {
   NativeTextAlign,
+  NativeTextPageAlign,
   NativeTextStyle,
   NativeTextTargetView,
   PdfNativeFontFamily,
@@ -145,8 +146,10 @@ export class PropertiesPanelComponent {
   readonly nativeStyleChange = output<Partial<NativeTextStyle>>();
   /** Replaces the selected section's text from the panel. */
   readonly nativeTextChange = output<string>();
-  /** Changes paragraph alignment of the selected section. */
+  /** Changes paragraph alignment inside the selected section. */
   readonly nativeAlignChange = output<NativeTextAlign>();
+  /** Places the whole section inside the page's text frame. */
+  readonly nativePageAlignChange = output<NativeTextPageAlign>();
 
   /** Faces the selected document family offers, shown under the picker. */
   readonly nativeFamilyFaces = computed<readonly string[]>(() => {
@@ -200,6 +203,13 @@ export class PropertiesPanelComponent {
       return;
     }
     this.nativeAlignChange.emit(align);
+  }
+
+  setNativePageAlign(align: NativeTextPageAlign): void {
+    if (this.nativeBusy()) {
+      return;
+    }
+    this.nativePageAlignChange.emit(align);
   }
 
   setNativeFamily(value: string): void {

@@ -69,6 +69,7 @@ import type {
 } from '../../core/services/pdf/text-edit/pdfium-text-edit.types';
 import type {
   NativeTextAlign,
+  NativeTextPageAlign,
   NativeTextPreview,
   NativeTextStyle,
   NativeTextTargetView,
@@ -337,6 +338,16 @@ export class EditorComponent implements OnDestroy {
     readonly MappedNativeTextRun[],
     MappedNativeTextBlock[]
   >();
+  /**
+   * Objects written together by one block edit. The geometry heuristic can
+   * split a reflowed paragraph when its lines are centred or start with
+   * different glyph bearings; this keeps the exact lines in one section.
+   */
+  private readonly nativeReflowGroups = new Map<
+    number,
+    { readonly pageIndex: number; readonly pointers: ReadonlySet<number> }
+  >();
+  private nativeReflowGroupId = 0;
   /** Page keys with an extraction in flight, so scrolling cannot duplicate it. */
   private readonly nativeRunsLoading = new Set<string>();
   readonly nativeTextTarget = computed<NativeTextTargetView | null>(() => {
@@ -356,6 +367,8 @@ export class EditorComponent implements OnDestroy {
   private nativeChain: Promise<void> = Promise.resolve();
   /** Guards the one async extraction a click may need before it edits. */
   private nativeClickPending = false;
+  /** Clears the panel selection after a click-away commit finishes. */
+  private dismissNativeAfterCommit = false;
   /** Active section border drag (left/right edge of the inline frame). */
   private nativeResize: {
     side: 'left' | 'right';
@@ -2643,6 +2656,164 @@ export class EditorComponent implements OnDestroy {
     return this.nativeRunsByKey().get(this.nativeRunKey(page)) ?? [];
   }
 
+  /** Remembers the exact lines a block edit wrote, so they stay one section. */
+  private setNativeReflowGroup(
+    pageIndex: number,
+    lines: readonly { readonly objectIndices: readonly number[] }[],
+  ): void {
+    if (lines.length < 2) {
+      return;
+    }
+    const pointers = new Set<number>();
+    for (const line of lines) {
+      for (const pointer of line.objectIndices) {
+        if (pointer) {
+          pointers.add(pointer);
+        }
+      }
+    }
+    if (pointers.size === 0) {
+      return;
+    }
+    this.nativeReflowGroups.set(++this.nativeReflowGroupId, {
+      pageIndex,
+      pointers,
+    });
+  }
+
+  private clearNativeReflowGroups(pageIndex?: number): void {
+    if (pageIndex === undefined) {
+      this.nativeReflowGroups.clear();
+      return;
+    }
+    for (const [id, group] of this.nativeReflowGroups) {
+      if (group.pageIndex === pageIndex) {
+        this.nativeReflowGroups.delete(id);
+      }
+    }
+  }
+
+  /**
+   * Re-joins blocks that an edit wrote as one paragraph.
+   *
+   * `buildTextBlocks` has to guess paragraphs from geometry. A reflowed
+   * section can defeat that guess after the commit (different first glyphs,
+   * centred lines, or slightly different leading). The committed object
+   * handles are exact, so merge those lines back into the section the user
+   * actually edited.
+   */
+  private mergeNativeReflowBlocks(
+    blocks: readonly MappedNativeTextBlock[],
+    pageIndex: number,
+    runs: readonly MappedNativeTextRun[],
+  ): MappedNativeTextBlock[] {
+    if (this.nativeReflowGroups.size === 0) {
+      return [...blocks];
+    }
+    const present = new Set<number>();
+    for (const run of runs) {
+      for (const pointer of run.objectIndices) {
+        present.add(pointer);
+      }
+    }
+    const groupByPointer = new Map<number, number>();
+    for (const [id, group] of this.nativeReflowGroups) {
+      if (group.pageIndex !== pageIndex) {
+        continue;
+      }
+      let complete = true;
+      for (const pointer of group.pointers) {
+        if (!present.has(pointer)) {
+          complete = false;
+          break;
+        }
+      }
+      if (!complete) {
+        this.nativeReflowGroups.delete(id);
+        continue;
+      }
+      for (const pointer of group.pointers) {
+        groupByPointer.set(pointer, id);
+      }
+    }
+    if (groupByPointer.size === 0) {
+      return [...blocks];
+    }
+
+    const groupedLines = new Map<number, MappedNativeTextBlockLine[]>();
+    const others: MappedNativeTextBlock[] = [];
+    for (const block of blocks) {
+      if (block.kind === 'cell') {
+        others.push(block);
+        continue;
+      }
+      const lineGroups = block.lines.map((line) => {
+        const ids = new Set<number>();
+        let ungrouped = false;
+        for (const run of line.runs) {
+          for (const pointer of run.objectIndices) {
+            const id = groupByPointer.get(pointer);
+            if (id === undefined) {
+              ungrouped = true;
+            } else {
+              ids.add(id);
+            }
+          }
+        }
+        return ids.size === 1 && !ungrouped ? Array.from(ids)[0] : null;
+      });
+      const first = lineGroups[0];
+      if (first === null || lineGroups.some((id) => id !== first)) {
+        others.push(block);
+        continue;
+      }
+      const lines = groupedLines.get(first) ?? [];
+      lines.push(...block.lines);
+      groupedLines.set(first, lines);
+    }
+
+    for (const [id, lines] of groupedLines) {
+      if (lines.length === 0) {
+        continue;
+      }
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      for (const line of lines) {
+        const r = line.normRect;
+        minX = Math.min(minX, r.x);
+        minY = Math.min(minY, r.y);
+        maxX = Math.max(maxX, r.x + r.width);
+        maxY = Math.max(maxY, r.y + r.height);
+      }
+      const sorted = [...lines].sort(
+        (a, b) => a.normRect.y - b.normRect.y || a.normRect.x - b.normRect.x,
+      );
+      others.push({
+        id: `${pageIndex}:reflow:${id}`,
+        pageIndex,
+        kind: sorted.length > 1 ? 'paragraph' : 'line',
+        lines: sorted,
+        normRect: {
+          x: minX,
+          y: minY,
+          width: maxX - minX,
+          height: maxY - minY,
+        },
+        tableRect: null,
+        label:
+          sorted.length > 1
+            ? `Paragraph · ${sorted.length} lines`
+            : 'Text line',
+      });
+    }
+
+    return others.sort(
+      (a, b) => a.normRect.y - b.normRect.y || a.normRect.x - b.normRect.x,
+    );
+  }
+
   /**
    * Clickable paragraph / line / table-cell groups for a page.
    *
@@ -2663,7 +2834,11 @@ export class EditorComponent implements OnDestroy {
     if (cached) {
       return cached;
     }
-    const blocks = buildTextBlocks(runs, page.sourceIndex);
+    const blocks = this.mergeNativeReflowBlocks(
+      buildTextBlocks(runs, page.sourceIndex),
+      page.sourceIndex,
+      runs,
+    );
     this.nativeBlocksCache.set(runs, blocks);
     return blocks;
   }
@@ -3024,16 +3199,65 @@ export class EditorComponent implements OnDestroy {
     );
   }
 
+  /**
+   * Whether a block contains the objects the open field is editing.
+   *
+   * Object handles can outlive a block id when another section's commit makes
+   * the page re-extract while this field is still open. Falling back to the
+   * handles keeps the active frame attached instead of drawing a second
+   * outline around the field.
+   */
+  private nativeBlockOwnsActive(
+    block: MappedNativeTextBlock,
+    active: ActiveNativeTextEdit,
+  ): boolean {
+    if (active.block) {
+      if (active.block.id === block.id) {
+        return true;
+      }
+      const hidden = new Set(active.hiddenObjectIndices ?? []);
+      if (hidden.size === 0) {
+        return false;
+      }
+      const present = new Set<number>();
+      for (const line of block.lines) {
+        for (const run of line.runs) {
+          for (const pointer of run.objectIndices) {
+            present.add(pointer);
+          }
+        }
+      }
+      // Every active object must be in this block. A block that only owns a
+      // split-off line should not also get the active frame.
+      for (const pointer of hidden) {
+        if (!present.has(pointer)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    const pointers = active.run.objectIndices;
+    if (pointers.length === 0) {
+      return false;
+    }
+    const present = new Set<number>();
+    for (const line of block.lines) {
+      for (const run of line.runs) {
+        for (const pointer of run.objectIndices) {
+          present.add(pointer);
+        }
+      }
+    }
+    return pointers.every((pointer) => present.has(pointer));
+  }
+
   /** Whether this section is the one currently open in the inline editor. */
   isNativeBlockEditing(block: MappedNativeTextBlock): boolean {
     const active = this.activeNativeEdit();
     if (!active) {
       return false;
     }
-    if (active.block) {
-      return active.block.id === block.id;
-    }
-    return block.lines.some((line) => line.runs.includes(active.run));
+    return this.nativeBlockOwnsActive(block, active);
   }
 
   /**
@@ -3045,11 +3269,8 @@ export class EditorComponent implements OnDestroy {
     if (!active || active.pageId !== page.id) {
       return false;
     }
-    if (active.block) {
-      return true;
-    }
     return this.getNativeBlocksForPage(page).some((block) =>
-      block.lines.some((line) => line.runs.includes(active.run)),
+      this.nativeBlockOwnsActive(block, active),
     );
   }
 
@@ -3600,6 +3821,39 @@ export class EditorComponent implements OnDestroy {
       }
     }
     return best;
+  }
+
+  /**
+   * The page's full text area in page CSS pixels.
+   *
+   * The editor has no explicit page margins, so the outermost text edges on the
+   * page define them; the right side mirrors the left margin when no block
+   * reaches the paper edge.
+   */
+  private nativePageTextFrame(
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+  ): { left: number; right: number } {
+    const size = this.getPageDisplaySize(page);
+    let left = block.normRect.x;
+    let right = block.normRect.x + block.normRect.width;
+    for (const other of this.getNativeBlocksForPage(page)) {
+      left = Math.min(left, other.normRect.x);
+      right = Math.max(right, other.normRect.x + other.normRect.width);
+    }
+    right = Math.max(right, 1 - left);
+    // A lone title or caption does not define page margins. Fall back to a
+    // normal text inset so "full page width" still means the page, not the
+    // width of that one short block.
+    if (right - left < 0.5) {
+      const inset = 0.07;
+      left = inset;
+      right = 1 - inset;
+    }
+    return {
+      left: Math.max(0, left * size.width),
+      right: Math.min(size.width, right * size.width),
+    };
   }
 
   /** Horizontal bounds of the text column the block sits in (normalized). */
@@ -4597,6 +4851,35 @@ export class EditorComponent implements OnDestroy {
     this.hoveredNativeBlock.set(null);
   }
 
+  /** Closes the inline selection without leaving content-edit mode. */
+  private dismissNativeSelection(): void {
+    const active = this.activeNativeEdit();
+    this.nativeResize = null;
+    this.nativeMove = null;
+    this.hoveredNativeBlock.set(null);
+    if (!active) {
+      this.nativeSelection.set(null);
+      return;
+    }
+    const changed =
+      active.text !== active.initialText ||
+      !!active.boxOverridden ||
+      !!active.offsetX ||
+      !!active.offsetY;
+    if (!changed) {
+      this.activeNativeEdit.set(null);
+      this.nativeSelection.set(null);
+      return;
+    }
+    // A click-away has no blur, so commit explicitly. The commit reads the
+    // selection synchronously before it queues worker work; clear the panel
+    // right after that read and suppress its async restore.
+    this.dismissNativeAfterCommit = true;
+    const commit = this.onNativeEditCommit(active.text);
+    this.nativeSelection.set(null);
+    void commit;
+  }
+
   /**
    * Widen the inline box while typing.
    *
@@ -4853,6 +5136,8 @@ export class EditorComponent implements OnDestroy {
       /** Whole-section position offset in page CSS pixels. */
       readonly offsetXPx?: number;
       readonly offsetYPx?: number;
+      /** Exact leading used by the inline preview, in page CSS pixels. */
+      readonly lineHeightPx?: number;
     },
   ): PdfNativeTextEdit[] {
     let editedLines = text.replace(/\r\n?/g, '\n').split('\n');
@@ -4872,7 +5157,13 @@ export class EditorComponent implements OnDestroy {
     const firstStyle = this.nativeDominantRun(firstLine);
     const lastOrigin = originals[originals.length - 1].runs[0];
     const anchorObjectIndex = firstStyle.objectIndices[0];
-    const lineHeightPt = this.nativeBlockLineHeightPt(block);
+    // Reuse the field's measured leading: a single-line block only has a
+    // font-size estimate, and a different commit spacing made wrapped lines
+    // read as separate sections after the editor closed.
+    const lineHeightPt =
+      options.lineHeightPx && options.lineHeightPx > 0
+        ? options.lineHeightPx / Math.max(0.01, options.pageScale)
+        : this.nativeBlockLineHeightPt(block);
     const firstScale = firstStyle.matrixScale > 0 ? firstStyle.matrixScale : 1;
     const firstEffective = firstStyle.fontSize * firstScale;
     const fontSizeForUntouched = Math.abs(style.fontSize - firstEffective) < 0.005;
@@ -4975,7 +5266,8 @@ export class EditorComponent implements OnDestroy {
           origin.matrix[2] ?? 0,
           origin.matrix[3] ?? 1,
           x + offsetXPt,
-          (origin.matrix[5] ?? 0) + offsetYPt,
+          // Display Y grows down; PDF text matrices grow up.
+          (origin.matrix[5] ?? 0) - offsetYPt,
         ];
         edits.push({
           objectIndices: original.runs.flatMap((item) => item.objectIndices),
@@ -5013,7 +5305,7 @@ export class EditorComponent implements OnDestroy {
         firstOrigin.matrix[2] ?? 0,
         firstOrigin.matrix[3] ?? 1,
         x + offsetXPt,
-        (lastOrigin.matrix[5] ?? 0) - lineHeightPt * offset + offsetYPt,
+        (lastOrigin.matrix[5] ?? 0) - lineHeightPt * offset - offsetYPt,
       ];
       edits.push({
         objectIndices: [],
@@ -5098,6 +5390,9 @@ export class EditorComponent implements OnDestroy {
               color: style.color,
             };
           });
+          if (selection.block && selection.block.kind !== 'cell') {
+            this.setNativeReflowGroup(selection.pageIndex, targets);
+          }
           this.nativeSelection.set({
             ...selection,
             style,
@@ -5120,6 +5415,9 @@ export class EditorComponent implements OnDestroy {
         if (result.warnings.length > 0) {
           this.toasts.warning(result.warnings[0]);
         }
+        // A style change replaces the text objects under the open field.
+        this.activeNativeEdit.set(null);
+        this.hoveredNativeBlock.set(null);
         this.applyNativeBytesInPlace(bytes, [selection.pageIndex], file);
       } catch (error) {
         // The worker reopens the last good bytes on failure, which invalidates
@@ -5357,16 +5655,24 @@ export class EditorComponent implements OnDestroy {
         return;
       }
       // A centred layout is only as wide as its centred box; left alignment
-      // must reflow against the whole text column instead.
+      // must reflow against the whole text column instead. After a page-scope
+      // placement, that target is the dragged/placed section box.
       const columnWidth =
-        selection.leftFramePx !== undefined &&
-        selection.rightFramePx !== undefined
+        selection.boxLeft !== undefined &&
+        selection.boxRight !== undefined
           ? Math.max(
               16,
-              (selection.rightFramePx - selection.leftFramePx) /
+              (selection.boxRight - selection.boxLeft) /
                 Math.max(0.1, selection.scaleX ?? 1),
             )
-          : selection.wrapWidth;
+          : selection.leftFramePx !== undefined &&
+              selection.rightFramePx !== undefined
+            ? Math.max(
+                16,
+                (selection.rightFramePx - selection.leftFramePx) /
+                  Math.max(0.1, selection.scaleX ?? 1),
+              )
+            : selection.wrapWidth;
       const nextSelection: NativeTextSelection = {
         ...selection,
         align,
@@ -5383,6 +5689,116 @@ export class EditorComponent implements OnDestroy {
         this.activeNativeEdit.set(active);
         void this.onNativeEditCommit(selection.text);
       }
+    });
+  }
+
+  /**
+   * Places the whole section inside the page's text frame.
+   *
+   * This is the page-scope counterpart to text alignment: the section box is
+   * moved (or widened for `full`) while its internal line alignment is kept,
+   * so Left + Full gives page-margin text and Center + Full gives a centred
+   * block that still wraps at the page width.
+   */
+  onNativePageAlignChange(align: NativeTextPageAlign): void {
+    this.runNativeTask(async () => {
+      const selection = this.nativeSelection();
+      if (!selection || !this.contentEditMode() || !selection.block) {
+        return;
+      }
+      const page = this.pagesStore.pages().find((p) => p.id === selection.pageId);
+      const block = this.nativeBlockFromSelection(selection);
+      if (!page || !block) {
+        return;
+      }
+      const size = this.getPageDisplaySize(page);
+      const gap = this.nativeFrameGap;
+      const active = this.activeNativeEdit();
+      const sameBlock = active?.block?.id === block.id;
+      const frame = sameBlock ? this.nativeSectionFrame(block, page) : null;
+      const currentLeft = frame
+        ? frame.left + gap
+        : (selection.boxLeft ??
+          Math.max(0, block.normRect.x * size.width));
+      const currentRight = frame
+        ? frame.left + frame.width - gap
+        : (selection.boxRight ??
+          Math.min(
+            size.width,
+            (block.normRect.x + block.normRect.width) * size.width,
+          ));
+      const currentWidth = Math.max(32, currentRight - currentLeft);
+      const pageFrame = this.nativePageTextFrame(block, page);
+      const pageWidth = Math.max(32, pageFrame.right - pageFrame.left);
+      const width = Math.min(currentWidth, pageWidth);
+      let left: number;
+      let right: number;
+      if (align === 'full') {
+        left = pageFrame.left;
+        right = pageFrame.right;
+      } else if (align === 'left') {
+        left = pageFrame.left;
+        right = pageFrame.left + width;
+      } else if (align === 'right') {
+        right = pageFrame.right;
+        left = pageFrame.right - width;
+      } else {
+        const center = (pageFrame.left + pageFrame.right) / 2;
+        left = center - width / 2;
+        right = center + width / 2;
+      }
+      // Keep the section inside the page text frame after preserving its width.
+      if (left < pageFrame.left) {
+        right += pageFrame.left - left;
+        left = pageFrame.left;
+      }
+      if (right > pageFrame.right) {
+        left -= right - pageFrame.right;
+        right = pageFrame.right;
+      }
+
+      const text = sameBlock && active ? active.text : selection.text;
+      const nextSelection: NativeTextSelection = {
+        ...selection,
+        text,
+        boxLeft: left,
+        boxRight: right,
+        // The page-placed box is now the alignment target for later text-align
+        // changes, so left alignment does not snap back to the old column.
+        leftFramePx: left,
+        rightFramePx: right,
+      };
+      this.nativeSelection.set(nextSelection);
+      const nextActive = this.nativeActiveFromSelection(
+        nextSelection,
+        text,
+        selection.align,
+        false,
+      );
+      if (!nextActive?.block) {
+        return;
+      }
+      const layout = this.nativeBlockEditLayout(
+        nextActive.block,
+        page,
+        {
+          fontFamily: nextActive.fontFamily,
+          text,
+          bold: nextActive.bold,
+          italic: nextActive.italic,
+          strokePx: nextActive.strokePx,
+          fontIsDocument: nextActive.fontIsDocument,
+        },
+        { boxLeft: left, boxRight: right },
+      );
+      this.activeNativeEdit.set({
+        ...nextActive,
+        ...layout,
+        boxLeft: left,
+        boxRight: right,
+        boxOverridden: true,
+      });
+      void this.onNativeEditCommit(text);
     });
   }
 
@@ -5438,8 +5854,13 @@ export class EditorComponent implements OnDestroy {
   }
 
   async onNativeEditCommit(text: string): Promise<void> {
+    const dismissAfterCommit = this.dismissNativeAfterCommit;
+    this.dismissNativeAfterCommit = false;
     const active = this.activeNativeEdit();
     if (!active) {
+      if (dismissAfterCommit) {
+        this.nativeSelection.set(null);
+      }
       return;
     }
     if (
@@ -5449,6 +5870,9 @@ export class EditorComponent implements OnDestroy {
       !active.offsetY
     ) {
       this.activeNativeEdit.set(null);
+      if (dismissAfterCommit) {
+        this.nativeSelection.set(null);
+      }
       return;
     }
     this.activeNativeEdit.set(null);
@@ -5460,6 +5884,9 @@ export class EditorComponent implements OnDestroy {
       const pageIndex = block.pageIndex;
       const file = this.files.currentFiles()[0];
       if (!file) {
+        if (dismissAfterCommit) {
+          this.nativeSelection.set(null);
+        }
         return;
       }
       const styleRun = this.nativeDominantRun(block.lines[0]);
@@ -5495,6 +5922,7 @@ export class EditorComponent implements OnDestroy {
           : undefined,
         offsetXPx: active.offsetX,
         offsetYPx: active.offsetY,
+        lineHeightPx: active.lineHeightPx ?? undefined,
       });
 
       this.runNativeTask(async () => {
@@ -5535,6 +5963,9 @@ export class EditorComponent implements OnDestroy {
               color: preserveLineStyle ? originalStyle.color : style.color,
             });
           });
+          if (block.kind !== 'cell' && aligned) {
+            this.setNativeReflowGroup(pageIndex, targets);
+          }
 
           // The committed page is the wrapped text, not necessarily the raw
           // field value; keep the panel's target aligned with real lines.
@@ -5542,7 +5973,9 @@ export class EditorComponent implements OnDestroy {
             .filter((edit) => edit.text.trim().length > 0)
             .map((edit) => edit.text)
             .join('\n');
-          if (committedText && targets.length > 0) {
+          if (dismissAfterCommit) {
+            this.nativeSelection.set(null);
+          } else if (committedText && targets.length > 0) {
             this.nativeSelection.set({
               pageId: active.pageId,
               pageIndex,
@@ -5615,6 +6048,9 @@ export class EditorComponent implements OnDestroy {
     const pageIndex = active.run.pageIndex;
     const file = this.files.currentFiles()[0];
     if (!file) {
+      if (dismissAfterCommit) {
+        this.nativeSelection.set(null);
+      }
       return;
     }
     // Capture the run *now*: a click on another run may replace the selection
@@ -5671,7 +6107,9 @@ export class EditorComponent implements OnDestroy {
         // Object handles changed; drop every cached run for the page.
         this.invalidateNativePage(pageIndex);
 
-        if (text.trim()) {
+        if (dismissAfterCommit) {
+          this.nativeSelection.set(null);
+        } else if (text.trim()) {
           this.nativeSelection.set({
             ...base,
             text,
@@ -5707,11 +6145,14 @@ export class EditorComponent implements OnDestroy {
 
   async nativeUndo(): Promise<void> {
     const file = this.files.currentFiles()[0];
+    this.activeNativeEdit.set(null);
     this.nativeSelection.set(null);
+    this.hoveredNativeBlock.set(null);
     this.runNativeTask(async () => {
       try {
         const restored = await this.textEdit.undo();
         if (restored) {
+          this.clearNativeReflowGroups(restored.pageIndex);
           this.applyNativeBytesInPlace(restored.bytes, [restored.pageIndex], file);
         }
       } catch (error) {
@@ -5724,11 +6165,14 @@ export class EditorComponent implements OnDestroy {
 
   async nativeRedo(): Promise<void> {
     const file = this.files.currentFiles()[0];
+    this.activeNativeEdit.set(null);
     this.nativeSelection.set(null);
+    this.hoveredNativeBlock.set(null);
     this.runNativeTask(async () => {
       try {
         const restored = await this.textEdit.redo();
         if (restored) {
+          this.clearNativeReflowGroups(restored.pageIndex);
           this.applyNativeBytesInPlace(restored.bytes, [restored.pageIndex], file);
         }
       } catch (error) {
@@ -5805,7 +6249,8 @@ export class EditorComponent implements OnDestroy {
     }
     const editorState = this.getStoredEditorState();
     this.files.patchCurrentData(bytes, editorState);
-    this.activeNativeEdit.set(null);
+    // Do not close an editor for a different section here: a pending commit
+    // can finish after the user has already opened the next one.
 
     for (const pageIndex of pageIndices) {
       this.nativeRenderVersions.update((map) => {
@@ -5890,6 +6335,7 @@ export class EditorComponent implements OnDestroy {
     this.nativeFonts.set([]);
     this.nativeRunsByKey.set(new Map());
     this.nativeRenderVersions.set(new Map());
+    this.clearNativeReflowGroups();
     this.pageAnnotationViewports.clear();
     this.isAutoScrolling = true;
     if (this.docUrl) {
@@ -6257,7 +6703,51 @@ export class EditorComponent implements OnDestroy {
   readonly isSpacePanning = signal(false);
   private panStart: { x: number; y: number; scrollLeft: number; scrollTop: number } | null = null;
 
+  /**
+   * Closes the active section when the pointer goes down outside its visible
+   * frame.
+   *
+   * The inline textarea spans the whole text column so paragraphs can wrap,
+   * which leaves an invisible input area to the right of a short section. This
+   * page-level check makes that area behave like the rest of the page instead
+   * of letting the textarea swallow the click.
+   */
+  private dismissNativeIfOutsideFrame(event: PointerEvent): void {
+    if (event.button !== 0) {
+      return;
+    }
+    const edit = this.activeNativeEdit();
+    if (!edit?.block || this.nativeResize || this.nativeMove) {
+      return;
+    }
+    const page = this.pagesStore.pages().find((p) => p.id === edit.pageId);
+    if (!page) {
+      return;
+    }
+    const pageFrame = document
+      .getElementById(`page-wrapper-${edit.pageId}`)
+      ?.querySelector<HTMLElement>('.editor__page-frame');
+    if (!pageFrame) {
+      return;
+    }
+    const frame = this.nativeSectionFrame(edit.block, page);
+    const rect = pageFrame.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const inside =
+      x >= frame.left &&
+      x <= frame.left + frame.width &&
+      y >= frame.top &&
+      y <= frame.top + frame.height;
+    if (!inside) {
+      this.dismissNativeSelection();
+    }
+  }
+
   onStagePointerDown(event: PointerEvent): void {
+    if (this.contentEditMode()) {
+      this.dismissNativeIfOutsideFrame(event);
+    }
     if (event.pointerType === 'touch') {
       return;
     }
