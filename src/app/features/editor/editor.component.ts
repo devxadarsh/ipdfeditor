@@ -68,6 +68,8 @@ import type {
   PdfNativeTextRun,
 } from '../../core/services/pdf/text-edit/pdfium-text-edit.types';
 import type {
+  NativeTextAlign,
+  NativeTextPreview,
   NativeTextStyle,
   NativeTextTargetView,
 } from './models/native-text-edit.model';
@@ -124,7 +126,6 @@ interface MappedNativeTextRun extends PdfNativeTextRun {
 
 type MappedNativeTextBlockLine = TextBlockLine<MappedNativeTextRun>;
 type MappedNativeTextBlock = TextBlock<MappedNativeTextRun>;
-type NativeTextAlign = 'left' | 'center' | 'right';
 
 /** One replaced line inside a whole-block selection. */
 interface NativeTextLineTarget {
@@ -149,12 +150,21 @@ interface ActiveNativeTextEdit {
   readonly multiline?: boolean;
   /** Alignment the field must reproduce (centered/right-aligned sections). */
   readonly align?: NativeTextAlign;
+  /** True when the panel is moving the section to a new alignment. */
+  readonly alignChanged?: boolean;
   /** Block leading in CSS pixels (null for single-line runs). */
   readonly lineHeightPx?: number | null;
   readonly left: number;
   readonly top: number;
   readonly width: number;
   readonly height: number;
+  /** Section box in page CSS pixels, when the user resized its borders. */
+  readonly boxLeft?: number;
+  readonly boxRight?: number;
+  readonly boxOverridden?: boolean;
+  /** Live position offset while the section is dragged, in page CSS pixels. */
+  readonly offsetX?: number;
+  readonly offsetY?: number;
   /** Painted extent of block text, so its frame can follow the value. */
   readonly inkLeft?: number;
   readonly inkRight?: number;
@@ -206,7 +216,10 @@ interface ActiveNativeTextEdit {
  * the object from its original geometry instead of compounding synthetic
  * styles.
  */
-interface NativeTextSelection extends NativeTextTargetView {
+interface NativeTextSelection {
+  readonly text: string;
+  readonly fontName: string;
+  readonly style: NativeTextStyle;
   readonly pageId: string;
   readonly pageIndex: number;
   readonly objectIndices: readonly number[];
@@ -233,6 +246,18 @@ interface NativeTextSelection extends NativeTextTargetView {
    * block to the first line's style.
    */
   readonly styleDirty?: boolean;
+  /** Geometry/alignment needed to re-apply panel edits without the field. */
+  readonly block?: MappedNativeTextBlock;
+  readonly align?: NativeTextAlign;
+  readonly wrapWidth?: number;
+  /** Edges of the text column, in page CSS pixels. */
+  readonly leftFramePx?: number;
+  readonly rightFramePx?: number;
+  readonly boxLeft?: number;
+  readonly boxRight?: number;
+  readonly preview?: NativeTextPreview;
+  readonly scaleX?: number;
+  readonly pageScale?: number;
 }
 
 /** Shared 2D context used to measure fonts without touching page layout. */
@@ -323,12 +348,34 @@ export class EditorComponent implements OnDestroy {
       text: selection.text,
       fontName: selection.fontName,
       style: selection.style,
+      align: selection.align ?? 'left',
+      canAlign: !!selection.block,
     };
   });
   /** Serialises native edits so a blur-commit always lands before a style. */
   private nativeChain: Promise<void> = Promise.resolve();
   /** Guards the one async extraction a click may need before it edits. */
   private nativeClickPending = false;
+  /** Active section border drag (left/right edge of the inline frame). */
+  private nativeResize: {
+    side: 'left' | 'right';
+    pageId: string;
+    blockId: string;
+    clientX: number;
+    boxLeft: number;
+    boxRight: number;
+    offsetX: number;
+  } | null = null;
+  /** Active section position drag. */
+  private nativeMove: {
+    pageId: string;
+    blockId: string;
+    clientX: number;
+    clientY: number;
+    offsetX: number;
+    offsetY: number;
+    frame: { left: number; top: number; width: number; height: number };
+  } | null = null;
   private readonly nativeRunsByKey = signal<Map<string, MappedNativeTextRun[]>>(
     new Map(),
   );
@@ -978,6 +1025,7 @@ export class EditorComponent implements OnDestroy {
   private readonly editorRef = viewChild<ElementRef<HTMLDivElement>>('editor');
   private readonly stageRef = viewChild<ElementRef<HTMLDivElement>>('stage');
   private readonly pagesStackRef = viewChild<ElementRef<HTMLElement>>('pagesStack');
+  private readonly nativeTextEditRef = viewChild(NativeTextEditComponent);
   readonly imageInputRef = viewChild<ElementRef<HTMLInputElement>>('imageFileInput');
   readonly isSignatureModalOpen = signal<boolean>(false);
   readonly isStampModalOpen = signal<boolean>(false);
@@ -1640,11 +1688,28 @@ export class EditorComponent implements OnDestroy {
         this.activeNativeEdit.set({
           ...edit,
           ...(edit.block
-            ? this.nativeBlockEditLayout(edit.block, page, preview)
+            ? this.nativeBlockEditLayout(
+                edit.block,
+                page,
+                preview,
+                edit.boxOverridden ||
+                edit.offsetX !== undefined ||
+                edit.offsetY !== undefined
+                  ? {
+                      boxLeft: edit.boxOverridden ? edit.boxLeft : undefined,
+                      boxRight: edit.boxOverridden ? edit.boxRight : undefined,
+                      offsetX: edit.offsetX,
+                      offsetY: edit.offsetY,
+                    }
+                  : undefined,
+              )
             : this.nativeEditLayout(edit.run, page, preview)),
           // The font-family list is kept as-is so a loaded web font survives.
           fontFamily: edit.fontFamily,
           strokePx,
+          // Layout returns the shifted box; keep the unshifted overrides.
+          boxLeft: edit.boxLeft,
+          boxRight: edit.boxRight,
         });
       });
     });
@@ -2704,7 +2769,13 @@ export class EditorComponent implements OnDestroy {
       return base;
     }
     const edit = this.activeNativeEdit();
-    if (!edit || edit.text === edit.initialText) {
+    const offsetX = edit?.offsetX ?? 0;
+    const offsetY = edit?.offsetY ?? 0;
+    const moved = offsetX !== 0 || offsetY !== 0;
+    if (
+      !edit ||
+      (edit.text === edit.initialText && !edit.boxOverridden && !moved)
+    ) {
       return base;
     }
     const gap = this.nativeFrameGap;
@@ -2713,11 +2784,244 @@ export class EditorComponent implements OnDestroy {
     const inkRight = edit.inkRight ?? edit.left + edit.width * scaleX;
     const inkTop = edit.inkTop ?? edit.top;
     const inkBottom = edit.inkBottom ?? edit.top + edit.height;
-    const left = Math.min(base.left, inkLeft - gap);
-    const top = Math.min(base.top, inkTop - gap);
-    const right = Math.max(base.left + base.width, inkRight + gap);
-    const bottom = Math.max(base.top + base.height, inkBottom + gap);
+    // A dragged border defines the section box; its text may still be the
+    // original value, so the frame has to follow the override width too.
+    const boxLeft = edit.boxOverridden
+      ? (edit.boxLeft ?? base.left + gap - offsetX) + offsetX
+      : null;
+    const boxRight = edit.boxOverridden
+      ? (edit.boxRight ?? base.left + base.width - gap - offsetX) + offsetX
+      : null;
+    const exact = edit.boxOverridden || moved;
+    const left =
+      boxLeft !== null
+        ? Math.max(0, boxLeft - gap)
+        : exact
+          ? inkLeft - gap
+          : Math.min(base.left, inkLeft - gap);
+    const top = exact ? inkTop - gap : Math.min(base.top, inkTop - gap);
+    const right =
+      boxRight !== null
+        ? boxRight + gap
+        : exact
+          ? inkRight + gap
+          : Math.max(base.left + base.width, inkRight + gap);
+    const bottom = exact
+      ? inkBottom + gap
+      : Math.max(base.top + base.height, inkBottom + gap);
     return { left, top, width: right - left, height: bottom - top };
+  }
+
+  /**
+   * Starts dragging the left or right border of the open section.
+   *
+   * `preventDefault` keeps focus in the inline field, so the same editing
+   * session continues while the text reflows into the new width.
+   */
+  onNativeSectionResizeStart(
+    event: PointerEvent,
+    side: 'left' | 'right',
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+  ): void {
+    const active = this.activeNativeEdit();
+    if (!active || active.block?.id !== block.id) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    // Start from the border the user grabbed, not the layout's full column
+    // width: the visible section frame hugs the text, so using the wider
+    // internal box would jump the section to full width on the first move.
+    const frame = this.nativeSectionFrame(block, page);
+    const gap = this.nativeFrameGap;
+    const offsetX = active.offsetX ?? 0;
+    this.nativeResize = {
+      side,
+      pageId: page.id,
+      blockId: block.id,
+      clientX: event.clientX,
+      // Box overrides stay in unshifted layout space; the position offset is
+      // applied separately so dragging and resizing can be combined.
+      boxLeft: frame.left + gap - offsetX,
+      boxRight: Math.max(
+        frame.left + gap + 32 - offsetX,
+        frame.left + frame.width - gap - offsetX,
+      ),
+      offsetX,
+    };
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(
+      event.pointerId,
+    );
+    // Some browsers move focus before the pointerdown default is cancelled.
+    // Returning it keeps the same edit session (and caret) alive.
+    setTimeout(() => this.nativeTextEditRef()?.focusField(), 0);
+  }
+
+  onNativeSectionResizeMove(event: PointerEvent): void {
+    const resize = this.nativeResize;
+    const active = this.activeNativeEdit();
+    if (!resize || !active?.block || active.block.id !== resize.blockId) {
+      return;
+    }
+    const page = this.pagesStore
+      .pages()
+      .find((candidate) => candidate.id === resize.pageId);
+    if (!page) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const pageWidth = this.getPageDisplaySize(page).width;
+    const dx = event.clientX - resize.clientX;
+    const minWidth = 72;
+    let left = resize.boxLeft;
+    let right = resize.boxRight;
+    if (resize.side === 'left') {
+      left = Math.max(
+        -resize.offsetX,
+        Math.min(resize.boxRight - minWidth, resize.boxLeft + dx),
+      );
+    } else {
+      right = Math.min(
+        pageWidth - resize.offsetX,
+        Math.max(resize.boxLeft + minWidth, resize.boxRight + dx),
+      );
+    }
+    const layout = this.nativeBlockEditLayout(
+      active.block,
+      page,
+      {
+        fontFamily: active.fontFamily,
+        text: active.text,
+        bold: active.bold,
+        italic: active.italic,
+        strokePx: active.strokePx,
+        fontIsDocument: active.fontIsDocument,
+      },
+      {
+        boxLeft: left,
+        boxRight: right,
+        offsetX: active.offsetX,
+        offsetY: active.offsetY,
+      },
+    );
+    this.activeNativeEdit.set({
+      ...active,
+      ...layout,
+      boxLeft: left,
+      boxRight: right,
+      boxOverridden: true,
+    });
+  }
+
+  onNativeSectionResizeEnd(event: PointerEvent): void {
+    if (!this.nativeResize) {
+      return;
+    }
+    this.nativeResize = null;
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture?.(
+      event.pointerId,
+    );
+  }
+
+  /** Starts dragging the section to a new position on the page. */
+  onNativeSectionMoveStart(
+    event: PointerEvent,
+    block: MappedNativeTextBlock,
+    page: EditorPage,
+  ): void {
+    const active = this.activeNativeEdit();
+    if (!active || active.block?.id !== block.id) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const frame = this.nativeSectionFrame(block, page);
+    this.nativeMove = {
+      pageId: page.id,
+      blockId: block.id,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      offsetX: active.offsetX ?? 0,
+      offsetY: active.offsetY ?? 0,
+      frame: { ...frame },
+    };
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(
+      event.pointerId,
+    );
+    setTimeout(() => this.nativeTextEditRef()?.focusField(), 0);
+  }
+
+  onNativeSectionMove(event: PointerEvent): void {
+    const move = this.nativeMove;
+    const active = this.activeNativeEdit();
+    if (!move || !active?.block || active.block.id !== move.blockId) {
+      return;
+    }
+    const page = this.pagesStore
+      .pages()
+      .find((candidate) => candidate.id === move.pageId);
+    if (!page) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const size = this.getPageDisplaySize(page);
+    // Keep the dragged section inside the page while it follows the pointer.
+    const dx = Math.max(
+      -move.frame.left,
+      Math.min(
+        size.width - (move.frame.left + move.frame.width),
+        event.clientX - move.clientX,
+      ),
+    );
+    const dy = Math.max(
+      -move.frame.top,
+      Math.min(
+        size.height - (move.frame.top + move.frame.height),
+        event.clientY - move.clientY,
+      ),
+    );
+    const offsetX = move.offsetX + dx;
+    const offsetY = move.offsetY + dy;
+    const layout = this.nativeBlockEditLayout(
+      active.block,
+      page,
+      {
+        fontFamily: active.fontFamily,
+        text: active.text,
+        bold: active.bold,
+        italic: active.italic,
+        strokePx: active.strokePx,
+        fontIsDocument: active.fontIsDocument,
+      },
+      {
+        boxLeft: active.boxOverridden ? active.boxLeft : undefined,
+        boxRight: active.boxOverridden ? active.boxRight : undefined,
+        offsetX,
+        offsetY,
+      },
+    );
+    this.activeNativeEdit.set({
+      ...active,
+      ...layout,
+      // Keep the unshifted resize overrides; the offsets are applied on top.
+      boxLeft: active.boxLeft,
+      boxRight: active.boxRight,
+      offsetX,
+      offsetY,
+    });
+  }
+
+  onNativeSectionMoveEnd(event: PointerEvent): void {
+    if (!this.nativeMove) {
+      return;
+    }
+    this.nativeMove = null;
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture?.(
+      event.pointerId,
+    );
   }
 
   /** Whether this section is the one currently open in the inline editor. */
@@ -3493,11 +3797,22 @@ export class EditorComponent implements OnDestroy {
       readonly strokePx: number;
       readonly fontIsDocument: boolean;
     },
+    overrideBox?: {
+      readonly boxLeft?: number;
+      readonly boxRight?: number;
+      readonly offsetX?: number;
+      readonly offsetY?: number;
+    },
   ): {
     left: number;
     top: number;
     width: number;
     height: number;
+    boxLeft: number;
+    boxRight: number;
+    /** Edges of the text column the section flows inside, page CSS px. */
+    flowLeftPx: number;
+    flowRightPx: number;
     fontSizePx: number;
     scaleX: number;
     lineHeightPx: number;
@@ -3633,7 +3948,16 @@ export class EditorComponent implements OnDestroy {
       left = Math.min(flowLeft, Math.max(0, frameLeft * size.width));
       boxRight = rights[Math.floor(rights.length / 2)];
     }
+    // Dragging a section border overrides the inferred box while keeping the
+    // opposite edge (and therefore the alignment anchor) fixed.
+    if (overrideBox?.boxLeft !== undefined) {
+      left = overrideBox.boxLeft;
+    }
+    if (overrideBox?.boxRight !== undefined) {
+      boxRight = overrideBox.boxRight;
+    }
     left = Math.max(0, left);
+    boxRight = Math.max(left + 32, boxRight);
     // Widths inside the field are unscaled font pixels; the host is scaled by
     // `scaleX` onto the page.
     const contentWidth = Math.max(
@@ -3706,20 +4030,37 @@ export class EditorComponent implements OnDestroy {
       metrics.lineHeight,
     );
 
+    const offsetX = overrideBox?.offsetX ?? 0;
+    const offsetY = overrideBox?.offsetY ?? 0;
+    const shiftedBoxLeft = left + offsetX;
+    const shiftedBoxRight =
+      left + Math.max(32, contentWidth) * Math.max(0.1, scaleX) + offsetX;
+    const movedLeft = left + offsetX;
+    const movedTop = top + offsetY;
+    const movedInkLeft = inkLeft + offsetX;
+    const movedInkRight = inkRight + offsetX;
+    const movedInkTop = inkTop + offsetY;
+    const movedInkBottom = inkBottom + offsetY;
     const backdrop = this.nativeBackdropForRect(block.normRect, size);
     return {
-      left,
-      top,
+      left: movedLeft,
+      top: movedTop,
       width: Math.max(32, contentWidth),
       height: Math.max(metrics.lineHeight, height) + 4,
+      boxLeft: shiftedBoxLeft,
+      boxRight: shiftedBoxRight,
+      flowLeftPx: flowLeft + offsetX,
+      flowRightPx: flowRight + offsetX,
       fontSizePx: metrics.fontSizePx,
       scaleX,
       lineHeightPx,
       align,
-      inkLeft,
-      inkRight,
-      inkTop,
-      inkBottom,
+      inkLeft: movedInkLeft,
+      inkRight: movedInkRight,
+      inkTop: movedInkTop,
+      inkBottom: movedInkBottom,
+      // The mask stays over the page's original glyphs; the moved preview is
+      // painted separately, so shifting the mask would uncover the old text.
       backdropRect: backdrop.rect,
       backdropRegion: backdrop.region,
     };
@@ -3743,6 +4084,15 @@ export class EditorComponent implements OnDestroy {
     const hiddenObjectIndices = Array.from(
       new Set(block.lines.flatMap((line) => line.runs.flatMap((run) => run.objectIndices))),
     );
+
+    const layout = this.nativeBlockEditLayout(block, page, {
+      fontFamily: fallbackFamily,
+      text: initialText,
+      bold: faceBold,
+      italic: faceItalic,
+      strokePx,
+      fontIsDocument: false,
+    });
 
     this.hoveredNativeBlock.set(null);
     this.nativeSelection.set({
@@ -3779,6 +4129,19 @@ export class EditorComponent implements OnDestroy {
         };
       }),
       styleDirty: false,
+      block,
+      align: layout.align,
+      wrapWidth: layout.width,
+      leftFramePx: layout.flowLeftPx,
+      rightFramePx: layout.flowRightPx,
+      preview: {
+        fontFamily: fallbackFamily,
+        fontSizePx: layout.fontSizePx,
+        bold: faceBold,
+        italic: faceItalic,
+      },
+      scaleX: layout.scaleX,
+      pageScale: this.getPageDisplaySize(page).scale,
     });
     this.activeNativeEdit.set({
       run: styleRun,
@@ -3786,14 +4149,7 @@ export class EditorComponent implements OnDestroy {
       hiddenObjectIndices,
       multiline: true,
       pageId: page.id,
-      ...this.nativeBlockEditLayout(block, page, {
-        fontFamily: fallbackFamily,
-        text: initialText,
-        bold: faceBold,
-        italic: faceItalic,
-        strokePx,
-        fontIsDocument: false,
-      }),
+      ...layout,
       initialText,
       text: initialText,
       fontFamily: fallbackFamily,
@@ -3817,22 +4173,65 @@ export class EditorComponent implements OnDestroy {
       const previewBold = faceBold || handle.bold;
       const previewItalic = faceItalic || handle.italic;
       const nextStrokePx = this.nativeStrokePx(styleRun, current, previewBold);
-      this.activeNativeEdit.set({
-        ...active,
-        ...this.nativeBlockEditLayout(block, current, {
+      const nextLayout = this.nativeBlockEditLayout(
+        block,
+        current,
+        {
           fontFamily: family,
           text: active.text,
           bold: previewBold,
           italic: previewItalic,
           strokePx: nextStrokePx,
           fontIsDocument: true,
-        }),
+        },
+        active.boxOverridden ||
+        active.offsetX !== undefined ||
+        active.offsetY !== undefined
+          ? {
+              boxLeft: active.boxOverridden
+                ? (active.boxLeft ?? 0) + (active.offsetX ?? 0)
+                : undefined,
+              boxRight: active.boxOverridden
+                ? (active.boxRight ?? 0) + (active.offsetX ?? 0)
+                : undefined,
+              offsetX: active.offsetX,
+              offsetY: active.offsetY,
+            }
+          : undefined,
+      );
+      this.activeNativeEdit.set({
+        ...active,
+        ...nextLayout,
         fontFamily: family,
         fontIsDocument: true,
         bold: previewBold,
         italic: previewItalic,
         strokePx: nextStrokePx,
+        boxLeft: active.boxLeft,
+        boxRight: active.boxRight,
       });
+      this.nativeSelection.update((selection) =>
+        selection?.block?.id === block.id
+          ? {
+              ...selection,
+              wrapWidth: nextLayout.width,
+              boxLeft: active.boxOverridden
+                ? nextLayout.boxLeft
+                : selection.boxLeft,
+              boxRight: active.boxOverridden
+                ? nextLayout.boxRight
+                : selection.boxRight,
+              preview: {
+                fontFamily: family,
+                fontSizePx: nextLayout.fontSizePx,
+                bold: previewBold,
+                italic: previewItalic,
+              },
+              scaleX: nextLayout.scaleX,
+              pageScale: this.getPageDisplaySize(current).scale,
+            }
+          : selection,
+      );
     });
   }
 
@@ -4192,6 +4591,8 @@ export class EditorComponent implements OnDestroy {
   }
 
   onNativeEditCancel(): void {
+    this.nativeResize = null;
+    this.nativeMove = null;
     this.activeNativeEdit.set(null);
     this.hoveredNativeBlock.set(null);
   }
@@ -4223,8 +4624,24 @@ export class EditorComponent implements OnDestroy {
       ...edit,
       text,
       ...(edit.block
-        ? this.nativeBlockEditLayout(edit.block, page, preview)
+        ? this.nativeBlockEditLayout(
+            edit.block,
+            page,
+            preview,
+            edit.boxOverridden ||
+            edit.offsetX !== undefined ||
+            edit.offsetY !== undefined
+              ? {
+                  boxLeft: edit.boxOverridden ? edit.boxLeft : undefined,
+                  boxRight: edit.boxOverridden ? edit.boxRight : undefined,
+                  offsetX: edit.offsetX,
+                  offsetY: edit.offsetY,
+                }
+              : undefined,
+          )
         : this.nativeEditLayout(edit.run, page, preview)),
+      boxLeft: edit.boxLeft,
+      boxRight: edit.boxRight,
     });
   }
 
@@ -4296,18 +4713,23 @@ export class EditorComponent implements OnDestroy {
     text: string,
     style: NativeTextStyle,
   ): PdfNativeTextEdit[] {
+    // Synthetic bold is stored as a stroked render mode on the PDF object,
+    // so turning it back off has to clear that stroke explicitly.
+    const clearStroke = selection.style.bold && !style.bold;
     const targets = selection.lineTargets;
     if (!targets || targets.length === 0) {
-      return [this.nativeEditFor(selection, text, style)];
+      const edit = this.nativeEditFor(selection, text, style);
+      return [clearStroke ? { ...edit, clearStroke } : edit];
     }
     const lines = text.replace(/\r\n?/g, '\n').split('\n');
-    return targets.map((target, index) =>
-      this.nativeLineEdit(
+    return targets.map((target, index) => {
+      const edit = this.nativeLineEdit(
         target,
         index < lines.length ? lines[index] : target.text,
         style,
-      ),
-    );
+      );
+      return clearStroke ? { ...edit, clearStroke } : edit;
+    });
   }
 
   /** Greedy wrap so a longer paragraph keeps the block's original width. */
@@ -4423,6 +4845,14 @@ export class EditorComponent implements OnDestroy {
       readonly align: NativeTextAlign;
       readonly pageScale: number;
       readonly scaleX: number;
+      /** Dragged section edges in page CSS pixels. */
+      readonly boxLeftPx?: number;
+      readonly boxRightPx?: number;
+      /** Column left edge used when the panel changes alignment. */
+      readonly leftAnchorPx?: number;
+      /** Whole-section position offset in page CSS pixels. */
+      readonly offsetXPx?: number;
+      readonly offsetYPx?: number;
     },
   ): PdfNativeTextEdit[] {
     let editedLines = text.replace(/\r\n?/g, '\n').split('\n');
@@ -4463,13 +4893,37 @@ export class EditorComponent implements OnDestroy {
     const centerPt = median(lineBounds.map((bounds) => bounds.center));
     const rightPt = median(lineBounds.map((bounds) => bounds.maxX));
     const leftX = firstOrigin.matrix[4] ?? 0;
+    const pageScale = options.pageScale > 0 ? options.pageScale : 1;
+    // Moving a section to Left uses the text column's edge, not each line's
+    // current origin: a centred or right-aligned paragraph would otherwise
+    // stay exactly where it was and the button would look broken.
+    const leftAnchorPt =
+      options.leftAnchorPx !== undefined
+        ? options.leftAnchorPx / pageScale
+        : null;
+    const offsetXPt = (options.offsetXPx ?? 0) / pageScale;
+    const offsetYPt = (options.offsetYPx ?? 0) / pageScale;
+    // A resized section re-anchors every line to its dragged box instead of
+    // the original ink extents.
+    const hasBox =
+      options.boxLeftPx !== undefined || options.boxRightPx !== undefined;
+    const boxLeftPt =
+      options.boxLeftPx !== undefined ? options.boxLeftPx / pageScale : leftX;
+    const boxRightPt =
+      options.boxRightPx !== undefined
+        ? options.boxRightPx / pageScale
+        : rightPt;
+    const anchorCenterPt = hasBox
+      ? (boxLeftPt + boxRightPt) / 2
+      : centerPt;
+    const anchorRightPt = hasBox ? boxRightPt : rightPt;
 
     const alignedX = (
       value: string,
       lineStyle: MappedNativeTextRun,
     ): number => {
       if (options.align === 'left' || !preview || !value) {
-        return leftX;
+        return hasBox ? boxLeftPt : (leftAnchorPt ?? leftX);
       }
       const lineScale =
         lineStyle.matrixScale > 0 ? lineStyle.matrixScale : 1;
@@ -4485,11 +4939,10 @@ export class EditorComponent implements OnDestroy {
         options.preserveLineStyle ? lineStyle.fontBold : preview.bold,
         options.preserveLineStyle ? lineStyle.fontItalic : preview.italic,
       );
-      const pageScale = options.pageScale > 0 ? options.pageScale : 1;
       const widthPt = (widthHost * options.scaleX) / pageScale;
       return options.align === 'center'
-        ? centerPt - widthPt / 2
-        : rightPt - widthPt;
+        ? anchorCenterPt - widthPt / 2
+        : anchorRightPt - widthPt;
     };
 
     const edits: PdfNativeTextEdit[] = [];
@@ -4512,15 +4965,17 @@ export class EditorComponent implements OnDestroy {
               : lineStyle.fontSize;
         const x =
           options.align === 'left'
-            ? (origin.matrix[4] ?? leftX)
+            ? hasBox
+              ? boxLeftPt
+              : (leftAnchorPt ?? (origin.matrix[4] ?? leftX))
             : alignedX(lineText, lineStyle);
         const matrix: readonly number[] = [
           origin.matrix[0] ?? 1,
           origin.matrix[1] ?? 0,
           origin.matrix[2] ?? 0,
           origin.matrix[3] ?? 1,
-          x,
-          origin.matrix[5] ?? 0,
+          x + offsetXPt,
+          (origin.matrix[5] ?? 0) + offsetYPt,
         ];
         edits.push({
           objectIndices: original.runs.flatMap((item) => item.objectIndices),
@@ -4548,15 +5003,17 @@ export class EditorComponent implements OnDestroy {
       const offset = index - (originals.length - 1);
       const x =
         options.align === 'left'
-          ? (firstOrigin.matrix[4] ?? 0)
+          ? hasBox
+            ? boxLeftPt
+            : (leftAnchorPt ?? (firstOrigin.matrix[4] ?? 0))
           : alignedX(lineText, firstStyle);
       const matrix: readonly number[] = [
         firstOrigin.matrix[0] ?? 1,
         firstOrigin.matrix[1] ?? 0,
         firstOrigin.matrix[2] ?? 0,
         firstOrigin.matrix[3] ?? 1,
-        x,
-        (lastOrigin.matrix[5] ?? 0) - lineHeightPt * offset,
+        x + offsetXPt,
+        (lastOrigin.matrix[5] ?? 0) - lineHeightPt * offset + offsetYPt,
       ];
       edits.push({
         objectIndices: [],
@@ -4677,12 +5134,320 @@ export class EditorComponent implements OnDestroy {
     });
   }
 
+  /**
+   * Refreshes a selected section's block from the current line handles.
+   *
+   * A commit can add lines, and the original block geometry no longer lists
+   * them. Rebuilding from `lineTargets` keeps panel edits from rewriting the
+   * original lines while leaving previously inserted text objects untouched.
+   */
+  private nativeBlockFromSelection(
+    selection: NativeTextSelection,
+  ): MappedNativeTextBlock | null {
+    const base = selection.block;
+    if (!base) {
+      return null;
+    }
+    const targets = selection.lineTargets;
+    if (!targets || targets.length === 0) {
+      return base;
+    }
+    const page = this.pagesStore.pages().find((p) => p.id === selection.pageId);
+    const display = page ? this.getPageDisplaySize(page) : null;
+    const preview = selection.preview;
+    const pageScale = display?.scale ?? selection.pageScale ?? 1;
+    const scaleX = selection.scaleX ?? 1;
+    const firstEffective =
+      targets[0].objectFontSize *
+      (targets[0].matrixScale > 0 ? targets[0].matrixScale : 1);
+    const toNorm = (x: number, y: number, width: number, height: number) =>
+      display
+        ? {
+            x: (x * pageScale) / Math.max(1, display.width),
+            y: (y * pageScale) / Math.max(1, display.height),
+            width: (width * pageScale) / Math.max(1, display.width),
+            height: (height * pageScale) / Math.max(1, display.height),
+          }
+        : { x: 0, y: 0, width: 0, height: 0 };
+
+    const lines: MappedNativeTextBlockLine[] = targets.map((target, index) => {
+      const effective =
+        target.objectFontSize *
+        (target.matrixScale > 0 ? target.matrixScale : 1);
+      const fontPx =
+        preview && firstEffective > 0
+          ? preview.fontSizePx * (effective / firstEffective)
+          : Math.max(1, effective * pageScale);
+      const widthHost = preview
+        ? this.measureNativeTextWidth(
+            target.text,
+            preview.fontFamily,
+            fontPx,
+            target.bold,
+            target.italic,
+          )
+        : target.text.length * fontPx * 0.6;
+      const widthPt = (widthHost * scaleX) / Math.max(0.01, pageScale);
+      const x = target.matrix[4] ?? 0;
+      const baselineY = target.matrix[5] ?? 0;
+      const heightPt = Math.max(1, effective);
+      const bbox = {
+        x,
+        y: baselineY - heightPt,
+        width: Math.max(1, widthPt),
+        height: heightPt,
+      };
+      const normRect = toNorm(bbox.x, bbox.y, bbox.width, bbox.height);
+      const run: MappedNativeTextRun = {
+        id:
+          target.objectIndices[0] !== undefined
+            ? `${target.objectIndices[0]}`
+            : `${base.id}:line:${index}`,
+        pageIndex: base.pageIndex,
+        pageId: selection.pageId,
+        objectIndices: target.objectIndices,
+        text: target.text,
+        fontSize: target.objectFontSize,
+        matrixScale: target.matrixScale,
+        matrix: target.matrix,
+        renderMode: 0,
+        fontName: selection.fontName,
+        fontFamily: base.lines[0]?.runs[0]?.fontFamily ?? '',
+        fontBold: target.bold,
+        fontItalic: target.italic,
+        strokeBold: false,
+        strokeWidth: 0,
+        color: target.color,
+        bbox,
+        normRect,
+      };
+      return {
+        runs: [run],
+        text: target.text,
+        normRect,
+        effectiveFontSize: effective,
+      };
+    });
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const line of lines) {
+      minX = Math.min(minX, line.normRect.x);
+      minY = Math.min(minY, line.normRect.y);
+      maxX = Math.max(maxX, line.normRect.x + line.normRect.width);
+      maxY = Math.max(maxY, line.normRect.y + line.normRect.height);
+    }
+    return {
+      ...base,
+      lines,
+      normRect: Number.isFinite(minX)
+        ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+        : base.normRect,
+    };
+  }
+
+  /**
+   * Builds a commit payload for a section selected in the properties panel.
+   *
+   * The inline field is gone by then, but the block geometry, alignment and
+   * preview metrics captured when it opened let the panel re-apply text and
+   * alignment exactly like the field would.
+   */
+  private nativeActiveFromSelection(
+    selection: NativeTextSelection,
+    text: string,
+    align?: NativeTextAlign,
+    alignChanged = false,
+  ): ActiveNativeTextEdit | null {
+    const block = this.nativeBlockFromSelection(selection);
+    if (!block) {
+      return null;
+    }
+    const firstLine = block.lines[0];
+    const styleRun = this.nativeDominantRun(firstLine);
+    const page = this.pagesStore.pages().find((p) => p.id === selection.pageId);
+    const fallbackFamily = this.nativeFontFamily(
+      styleRun.fontFamily,
+      styleRun.fontName,
+    );
+    const preview: NativeTextPreview = selection.preview ?? {
+      fontFamily: fallbackFamily,
+      fontSizePx: Math.max(
+        1,
+        styleRun.fontSize *
+          (styleRun.matrixScale > 0 ? styleRun.matrixScale : 1) *
+          (page ? this.getPageDisplaySize(page).scale : 1),
+      ),
+      bold: styleRun.fontBold,
+      italic: styleRun.fontItalic,
+    };
+    const scaleX = selection.scaleX ?? 1;
+    const pageWidth = page ? this.getPageDisplaySize(page).width : 0;
+    const wrapWidth =
+      selection.wrapWidth ??
+      Math.max(32, (block.normRect.width * pageWidth) / Math.max(0.1, scaleX));
+    const color = selection.style.color;
+    return {
+      run: styleRun,
+      block,
+      pageId: selection.pageId,
+      hiddenObjectIndices: selection.objectIndices,
+      multiline: true,
+      align: align ?? selection.align ?? 'left',
+      alignChanged,
+      width: wrapWidth,
+      boxLeft: selection.boxLeft,
+      boxRight: selection.boxRight,
+      boxOverridden:
+        selection.boxLeft !== undefined || selection.boxRight !== undefined,
+      left: selection.boxLeft ?? 0,
+      top: 0,
+      height: 0,
+      initialText: '\u0000',
+      text,
+      fontSizePx: preview.fontSizePx,
+      fontFamily: preview.fontFamily,
+      scaleX,
+      color: `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a / 255})`,
+      bold: preview.bold,
+      italic: preview.italic,
+      strokePx: 0,
+      fontIsDocument: false,
+      backdrop: null,
+      backdropRect: { left: 0, top: 0, width: 0, height: 0 },
+      backdropRegion: { x: 0, y: 0, width: 0, height: 0 },
+    };
+  }
+
+  /** Applies text typed in the properties panel to the selected PDF run. */
+  onNativeTextChange(text: string): void {
+    // Queue behind any inline commit/style change still in flight so the
+    // selection read here describes the page the worker currently holds.
+    this.runNativeTask(async () => {
+      const selection = this.nativeSelection();
+      if (!selection || !this.contentEditMode()) {
+        return;
+      }
+      const normalized = text.replace(/\r\n?/g, '\n');
+      if (normalized === selection.text) {
+        return;
+      }
+      if (selection.block) {
+        const active = this.nativeActiveFromSelection(selection, normalized);
+        if (active) {
+          this.activeNativeEdit.set(active);
+          void this.onNativeEditCommit(normalized);
+        }
+        return;
+      }
+      this.applyNativeRunText(selection, normalized);
+    });
+  }
+
+  /** Applies a paragraph alignment chosen in the properties panel. */
+  onNativeAlignChange(align: NativeTextAlign): void {
+    this.runNativeTask(async () => {
+      const selection = this.nativeSelection();
+      if (!selection || !this.contentEditMode() || !selection.block) {
+        return;
+      }
+      if ((selection.align ?? 'left') === align) {
+        return;
+      }
+      // A centred layout is only as wide as its centred box; left alignment
+      // must reflow against the whole text column instead.
+      const columnWidth =
+        selection.leftFramePx !== undefined &&
+        selection.rightFramePx !== undefined
+          ? Math.max(
+              16,
+              (selection.rightFramePx - selection.leftFramePx) /
+                Math.max(0.1, selection.scaleX ?? 1),
+            )
+          : selection.wrapWidth;
+      const nextSelection: NativeTextSelection = {
+        ...selection,
+        align,
+        wrapWidth: align === 'left' ? columnWidth : selection.wrapWidth,
+      };
+      this.nativeSelection.set(nextSelection);
+      const active = this.nativeActiveFromSelection(
+        nextSelection,
+        nextSelection.text,
+        align,
+        true,
+      );
+      if (active) {
+        this.activeNativeEdit.set(active);
+        void this.onNativeEditCommit(selection.text);
+      }
+    });
+  }
+
+  /** Single-run text edit from the panel (table cells, rotated pages). */
+  private applyNativeRunText(
+    selection: NativeTextSelection,
+    text: string,
+  ): void {
+    const file = this.files.currentFiles()[0];
+    if (!file) {
+      return;
+    }
+    const pageIndex = selection.pageIndex;
+    this.runNativeTask(async () => {
+      try {
+        const { bytes, result } = await this.textEdit.applyEdit(
+          pageIndex,
+          this.nativeEditFor(selection, text, selection.style),
+        );
+        const outcome = result.outcomes[0];
+        this.invalidateNativePage(pageIndex);
+        if (text.trim()) {
+          this.nativeSelection.set({
+            ...selection,
+            text,
+            objectIndices: outcome?.objectIndices?.length
+              ? outcome.objectIndices
+              : selection.objectIndices,
+            fontName: outcome?.fontName || selection.fontName,
+          });
+        } else {
+          this.nativeSelection.set(null);
+        }
+        if (result.substitutedFonts > 0) {
+          this.toasts.info(
+            'Font substituted for characters the original font lacks.',
+          );
+        } else if (result.warnings.length > 0) {
+          this.toasts.warning(result.warnings[0]);
+        } else {
+          this.toasts.success('PDF text updated.');
+        }
+        this.applyNativeBytesInPlace(bytes, [pageIndex], file);
+      } catch (error) {
+        this.nativeSelection.set(null);
+        this.toasts.error(
+          error instanceof Error
+            ? error.message
+            : 'Could not update the PDF text.',
+        );
+      }
+    });
+  }
+
   async onNativeEditCommit(text: string): Promise<void> {
     const active = this.activeNativeEdit();
     if (!active) {
       return;
     }
-    if (text === active.initialText) {
+    if (
+      text === active.initialText &&
+      !active.boxOverridden &&
+      !active.offsetX &&
+      !active.offsetY
+    ) {
       this.activeNativeEdit.set(null);
       return;
     }
@@ -4720,9 +5485,16 @@ export class EditorComponent implements OnDestroy {
           italic: active.italic,
         },
         preserveLineStyle,
-        align: active.align ?? 'left',
+        align: active.align ?? selection?.align ?? 'left',
         pageScale: page ? this.getPageDisplaySize(page).scale : 1,
         scaleX: active.scaleX,
+        boxLeftPx: active.boxOverridden ? active.boxLeft : undefined,
+        boxRightPx: active.boxOverridden ? active.boxRight : undefined,
+        leftAnchorPx: active.alignChanged
+          ? selection?.leftFramePx
+          : undefined,
+        offsetXPx: active.offsetX,
+        offsetYPx: active.offsetY,
       });
 
       this.runNativeTask(async () => {
@@ -4784,6 +5556,31 @@ export class EditorComponent implements OnDestroy {
               style,
               lineTargets: targets,
               styleDirty: false,
+              block,
+              align: active.align ?? selection?.align ?? 'left',
+              wrapWidth: Math.max(16, active.width),
+              // A moved section keeps its new position when the panel aligns
+              // it later, instead of snapping back to the old text column.
+              leftFramePx:
+                selection?.leftFramePx !== undefined
+                  ? selection.leftFramePx + (active.offsetX ?? 0)
+                  : undefined,
+              rightFramePx:
+                selection?.rightFramePx !== undefined
+                  ? selection.rightFramePx + (active.offsetX ?? 0)
+                  : undefined,
+              boxLeft: active.boxOverridden ? active.boxLeft : undefined,
+              boxRight: active.boxOverridden ? active.boxRight : undefined,
+              preview: {
+                fontFamily: active.fontFamily,
+                fontSizePx: active.fontSizePx,
+                bold: active.bold,
+                italic: active.italic,
+              },
+              scaleX: active.scaleX,
+              pageScale: page
+                ? this.getPageDisplaySize(page).scale
+                : selection?.pageScale,
             });
           } else {
             this.nativeSelection.set(null);
@@ -4943,6 +5740,14 @@ export class EditorComponent implements OnDestroy {
   }
 
   exitContentEditMode(): void {
+    const active = this.activeNativeEdit();
+    // A width drag only lives in the preview until the block is committed;
+    // leaving the tool must not silently discard it.
+    if (active?.boxOverridden || active?.offsetX || active?.offsetY) {
+      void this.onNativeEditCommit(active.text);
+    }
+    this.nativeResize = null;
+    this.nativeMove = null;
     this.activeNativeEdit.set(null);
     this.nativeSelection.set(null);
     this.state.setTool('select');

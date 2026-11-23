@@ -1774,6 +1774,46 @@
                         [style.width.px]="frame.width"
                         [style.height.px]="frame.height"
                       ></div>
+                      @if (activeNativeEdit()?.block?.id === block.id) {
+                        <div
+                          class="editor__native-resize-handle editor__native-resize-handle--left"
+                          role="separator"
+                          aria-label="Drag to adjust section width from the left"
+                          title="Drag to adjust section width"
+                          [style.left.px]="frame.left"
+                          [style.top.px]="frame.top + frame.height / 2"
+                          (pointerdown)="onNativeSectionResizeStart($event, 'left', block, page)"
+                          (pointermove)="onNativeSectionResizeMove($event)"
+                          (pointerup)="onNativeSectionResizeEnd($event)"
+                          (pointercancel)="onNativeSectionResizeEnd($event)"
+                        ></div>
+                        <div
+                          class="editor__native-resize-handle editor__native-resize-handle--right"
+                          role="separator"
+                          aria-label="Drag to adjust section width from the right"
+                          title="Drag to adjust section width"
+                          [style.left.px]="frame.left + frame.width"
+                          [style.top.px]="frame.top + frame.height / 2"
+                          (pointerdown)="onNativeSectionResizeStart($event, 'right', block, page)"
+                          (pointermove)="onNativeSectionResizeMove($event)"
+                          (pointerup)="onNativeSectionResizeEnd($event)"
+                          (pointercancel)="onNativeSectionResizeEnd($event)"
+                        ></div>
+                        <div
+                          class="editor__native-move-handle"
+                          role="button"
+                          aria-label="Drag to move section"
+                          title="Drag to move section"
+                          [style.left.px]="frame.left"
+                          [style.top.px]="frame.top"
+                          (pointerdown)="onNativeSectionMoveStart($event, block, page)"
+                          (pointermove)="onNativeSectionMove($event)"
+                          (pointerup)="onNativeSectionMoveEnd($event)"
+                          (pointercancel)="onNativeSectionMoveEnd($event)"
+                        >
+                          <i class="fa-solid fa-up-down-left-right"></i>
+                        </div>
+                      }
                     }
                   }
                   @if (hoveredNativeBlock(); as hover) {
@@ -1918,6 +1958,8 @@
           [nativeBusy]="textEdit.applying()"
           [nativeFonts]="nativeFonts()"
           (nativeStyleChange)="onNativeStyleChange($event)"
+          (nativeTextChange)="onNativeTextChange($event)"
+          (nativeAlignChange)="onNativeAlignChange($event)"
           (collapse)="togglePropertiesPanel()"
         />
         }
@@ -1946,6 +1988,8 @@
           [nativeBusy]="textEdit.applying()"
           [nativeFonts]="nativeFonts()"
           (nativeStyleChange)="onNativeStyleChange($event)"
+          (nativeTextChange)="onNativeTextChange($event)"
+          (nativeAlignChange)="onNativeAlignChange($event)"
           (collapse)="closePropertiesSheet()"
         />
       </div>

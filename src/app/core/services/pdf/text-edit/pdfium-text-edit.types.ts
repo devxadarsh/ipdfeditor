@@ -143,6 +143,14 @@ export interface PdfNativeTextEdit {
    */
   readonly bold?: boolean;
   /**
+   * Removes a synthetic bold stroke left on an object by a previous edit.
+   *
+   * The worker emulates bold by switching the text render mode to stroke; the
+   * stored object then reports that stroked mode even after bold is turned
+   * off, so the caller asks for the stroke to be cleared explicitly.
+   */
+  readonly clearStroke?: boolean;
+  /**
    * Italic intent. A real italic/oblique face is used when the family has one;
    * otherwise the worker shears the base matrix itself.
    */

@@ -1678,6 +1678,27 @@ function applyEdits(
         }
       }
     }
+    // `original` keeps the embedded face. If that face is itself bold, turning
+    // Bold off would otherwise keep reusing it and the text would never look
+    // regular again, so prefer the family's regular sibling when one exists.
+    if (edit.fontFamily === 'original' && edit.bold === false) {
+      const currentStyle = readFontStyle(fontPtr, requestedFaceName);
+      if (currentStyle.bold) {
+        const regular = resolveDocumentFont(
+          familyForFont(props.fontPtr, props.fontName),
+          false,
+          !!edit.italic,
+        );
+        if (regular && regular.ptr) {
+          const regularStyle = readFontStyle(regular.ptr, regular.name);
+          if (!regularStyle.bold) {
+            fontPtr = regular.ptr;
+            requestedFaceName = regular.name;
+          }
+        }
+      }
+    }
+
     const coverage = glyphCoverageCached(fontPtr, newText);
     if (coverage.checked && !coverage.supported) {
       // 1. Another face of the same family often has the missing glyphs
@@ -1742,14 +1763,22 @@ function applyEdits(
     const matrix = fauxItalic
       ? italicShearMatrix(baseMatrix, SYNTHETIC_ITALIC_SLOPE)
       : baseMatrix;
+    // A previous synthetic bold left the object in a stroked render mode.
+    // Turning bold off must reset that mode, otherwise the text keeps its
+    // heavier outline no matter how often the user toggles the button.
+    const clearStroke = !!edit.clearStroke && !fauxBold;
     const renderMode = fauxBold
       ? props.renderMode === 1
         ? 1
         : 2
-      : props.renderMode;
+      : clearStroke
+        ? 0
+        : props.renderMode;
     const strokeWidth = fauxBold
       ? Math.max(0.25, fontSize * 0.03)
-      : props.strokeWidth;
+      : clearStroke
+        ? 0
+        : props.strokeWidth;
     const strokeColor =
       renderMode === 1 || renderMode === 2 ? fill : props.stroke;
 
